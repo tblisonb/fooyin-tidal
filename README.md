@@ -40,7 +40,7 @@ don't take problems with it to either project.
 
 So full-length playback needs a second login with a client ID from TIDAL's own apps (as Strawberry
 does), and that login is used only for v1's playback info. Everything else stays on the official API.
-v2's track IDs are the same numbers v1 and TIDAL's own links use. Search is
+v2's track IDs look like the numbers v1 and TIDAL's links use; checking that needs the v1 login. Search is
 `GET /searchResults?filter[query]=…`; the older `/searchResults/{query}` form now returns 400.
 
 ### Running the probe
