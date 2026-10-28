@@ -1,0 +1,15 @@
+{
+    "Name" : "TIDAL",
+    "Version" : "${PROJECT_VERSION}",
+    "Author" : "Tanner Lisonbee",
+    "Copyright" : "Copyright © 2026, Tanner Lisonbee",
+    "License" : [ "This plugin is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.",
+                  "",
+                  "It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.",
+                  "",
+                  "This is an independent third-party plugin, not part of fooyin or affiliated with TIDAL."
+                ],
+    "Category" : "Online Services",
+    "Description" : "Search, play and manage your TIDAL music, playlists and favorites",
+    "Url" : "https://github.com/tblisonb/fooyin-tidal"
+}
