@@ -11,6 +11,9 @@ don't take problems with it to either project.
 (**File > Add TIDAL track…**), at up to 24-bit FLAC, with seeking. It can't log in by itself yet:
 `tools/tidal-probe.py` does that and hands it the login.
 
+Design notes, what was learned about fooyin and TIDAL, and the plan ahead are in
+[docs/design.md](docs/design.md).
+
 ## How it fits together
 
 - **Search, browsing, favorites and playlists** use TIDAL's official
@@ -42,7 +45,7 @@ don't take problems with it to either project.
 
 So full-length playback needs a second login with a client ID from TIDAL's own apps (as Strawberry
 does), and that login is used only for v1's playback info. Everything else stays on the official API.
-v2's track IDs look like the numbers v1 and TIDAL's links use; checking that needs the v1 login. Search is
+v1 and v2 use the same track IDs (confirmed with the playback login). Search is
 `GET /searchResults?filter[query]=…`; the older `/searchResults/{query}` form now returns 400.
 
 ### Running the probe
