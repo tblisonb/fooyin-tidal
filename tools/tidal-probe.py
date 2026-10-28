@@ -4,19 +4,22 @@
   1. Can a TIDAL developer app log in from a desktop (PKCE with a localhost redirect)?
   2. Does the official v2 API hand that app track manifests without DRM, which fooyin could play?
   3. If not, does the private v1 API accept the same login, and do v1 and v2 share track IDs?
+  4. With its own login (a client ID from one of TIDAL's apps), does v1 give full-length streams?
 
 Standard library only. Logins are kept in ~/.config/fooyin-tidal/probe.json (readable only by you).
 
   tools/tidal-probe.py login --client-id <id>     # opens the browser; run once
+  tools/tidal-probe.py login-v1 --device|--pkce   # the playback login; asks for the client ID
   tools/tidal-probe.py search "artist or title"   # find a track ID
   tools/tidal-probe.py track <id>                 # its v2 metadata
   tools/tidal-probe.py manifest <id> [--play]     # question 2
-  tools/tidal-probe.py v1 <id>                    # question 3
+  tools/tidal-probe.py v1 <id> [--play]           # questions 3 and 4
   tools/tidal-probe.py report <id>                # all of the above, for pasting back
 """
 
 import argparse
 import base64
+import getpass
 import hashlib
 import http.server
 import json
@@ -285,28 +288,138 @@ def cmd_manifest(args):
 
 # ---- v1 ----
 
+# The v1 login uses a client ID from one of TIDAL's own apps. A "device" client logs in like a TV
+# (approve a code at link.tidal.com); a "pkce" client logs in in the browser and ends on an "Oops"
+# page whose URL you paste back. Only TIDAL's Android client (pkce) is known to get hi-res streams.
+V1_SCOPES = "r_usr w_usr w_sub"
+V1_PKCE_REDIRECT = "https://tidal.com/android/login/auth"
+DEVICE_AUTH_URL = "https://auth.tidal.com/v1/oauth2/device_authorization"
+
+
+def cmd_login_v1(args):
+    state = load_state()
+    # Asked for rather than taken as arguments, so they stay out of shell history.
+    client_id = getpass.getpass("Client ID (input hidden): ").strip()
+    client_secret = getpass.getpass("Client secret (input hidden, Enter for none): ").strip()
+    v1 = {"client_id": client_id, "client_secret": client_secret, "flow": "device" if args.device else "pkce"}
+
+    if args.device:
+        auth = request("POST", DEVICE_AUTH_URL, form={"client_id": client_id, "scope": V1_SCOPES})
+        link = auth.get("verificationUriComplete") or auth.get("verificationUri")
+        if link and not link.startswith("http"):
+            link = "https://" + link
+        print(f"\nApprove this login at {link}  (code {auth.get('userCode')})")
+        webbrowser.open(link)
+        deadline = time.time() + int(auth.get("expiresIn", 300))
+        form = {"client_id": client_id, "device_code": auth["deviceCode"],
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code", "scope": V1_SCOPES}
+        if client_secret:
+            form["client_secret"] = client_secret
+        while True:
+            time.sleep(int(auth.get("interval", 2)))
+            try:
+                token = request("POST", TOKEN_URL, form=form)
+                break
+            except HttpError as e:
+                if "authorization_pending" not in e.body or time.time() > deadline:
+                    raise
+    else:
+        verifier = secrets.token_urlsafe(64)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        unique_key = secrets.token_hex(8)
+        url = "https://login.tidal.com/authorize?" + urllib.parse.urlencode({
+            "response_type": "code",
+            "redirect_uri": V1_PKCE_REDIRECT,
+            "client_id": client_id,
+            "lang": "EN",
+            "appMode": "android",
+            "client_unique_key": unique_key,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "restrict_signup": "true",
+        })
+        print("\nLog in in the browser. You'll end up on an 'Oops' page: copy that page's whole URL.")
+        print(f"If no browser opens, visit:\n\n  {url}\n")
+        webbrowser.open(url)
+        redirected = input("Paste the 'Oops' page URL here: ").strip()
+        code = urllib.parse.parse_qs(urllib.parse.urlsplit(redirected).query).get("code", [None])[0]
+        if not code:
+            sys.exit("That URL has no code in it; copy the address of the page the login ended on.")
+        form = {"code": code, "client_id": client_id, "grant_type": "authorization_code",
+                "redirect_uri": V1_PKCE_REDIRECT, "scope": V1_SCOPES, "code_verifier": verifier,
+                "client_unique_key": unique_key}
+        token = request("POST", TOKEN_URL, form=form)
+
+    store_token(v1, token)
+    state["v1"] = v1
+    save_state(state)
+    print("Logged in for playback.")
+
+
+def v1_access_token(state):
+    v1 = state.get("v1")
+    if not v1:
+        return None
+    if time.time() >= v1.get("expires_at", 0):
+        form = {"grant_type": "refresh_token", "client_id": v1["client_id"],
+                "refresh_token": v1["refresh_token"], "scope": V1_SCOPES}
+        if v1.get("client_secret"):
+            form["client_secret"] = v1["client_secret"]
+        store_token(v1, request("POST", TOKEN_URL, form=form))
+        save_state(state)
+    return v1["access_token"]
+
+
 def cmd_v1(args):
-    print(json.dumps(v1_summary(load_state(), args.id), indent=2))
+    print(json.dumps(v1_summary(load_state(), args.id, args.quality, play=args.play), indent=2))
 
 
-def v1_summary(state, track_id):
-    headers = {"Authorization": f"Bearer {access_token(state)}"}
-    out = {}
+def v1_summary(state, track_id, quality="HI_RES_LOSSLESS", play=False):
+    token = v1_access_token(state)
+    out = {"login": f"v1 ({state['v1']['flow']})" if token else "developer app (no v1 login yet)"}
+    headers = {"Authorization": f"Bearer {token or access_token(state)}"}
     try:
         track = request("GET", f"{API_V1}/tracks/{track_id}", params={"countryCode": country(state)},
                         headers=headers)
         out["track"] = {"title": track.get("title"), "artist": (track.get("artist") or {}).get("name"),
-                        "isrc": track.get("isrc")}
+                        "isrc": track.get("isrc"), "duration": track.get("duration")}
     except HttpError as e:
         out["track"] = str(e)
     try:
         info = request("GET", f"{API_V1}/tracks/{track_id}/playbackinfo", headers=headers, params={
-            "audioquality": "LOSSLESS", "playbackmode": "STREAM", "assetpresentation": "FULL"})
-        out["playbackinfo"] = {k: info.get(k) for k in
-                               ("audioQuality", "assetPresentation", "manifestMimeType", "bitDepth", "sampleRate")}
+            "countryCode": country(state), "audioquality": quality, "playbackmode": "STREAM",
+            "assetpresentation": "FULL"})
     except HttpError as e:
         out["playbackinfo"] = str(e)
+        return out
+    out["playbackinfo"] = {k: info.get(k) for k in
+                           ("audioQuality", "assetPresentation", "manifestMimeType", "bitDepth", "sampleRate")}
+    source = save_v1_manifest(track_id, info)
+    out["manifest"] = "direct URL" if source.startswith("http") else source
+    if not source.startswith(("encrypted", "unknown")):
+        out["ffprobe"] = ffprobe(source)
+        if play:
+            subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "warning",
+                            "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data", source])
     return out
+
+
+def save_v1_manifest(track_id, info):
+    """Returns something ffprobe can open: a stream URL, or a saved DASH manifest."""
+    manifest = base64.b64decode(info.get("manifest", ""))
+    mime = info.get("manifestMimeType", "")
+    if mime == "application/vnd.tidal.bts":
+        bts = json.loads(manifest)
+        if bts.get("encryptionType", "NONE") != "NONE":
+            return f"encrypted ({bts['encryptionType']})"
+        return bts["urls"][0]
+    if mime == "application/dash+xml":
+        os.makedirs(OUT_DIR, exist_ok=True)
+        path = os.path.join(OUT_DIR, f"{track_id}-v1.mpd")
+        with open(path, "wb") as f:
+            f.write(manifest)
+        return path
+    return f"unknown manifest type {mime}"
 
 
 # ---- Report ----
@@ -362,8 +475,16 @@ def main():
     p.add_argument("--play", action="store_true", help="play it with ffplay if it has no DRM")
     p.set_defaults(func=cmd_manifest)
 
-    p = sub.add_parser("v1", help="the same track through the private v1 API, with the same login")
+    p = sub.add_parser("login-v1", help="the playback login, with a client ID from one of TIDAL's apps")
+    flow = p.add_mutually_exclusive_group(required=True)
+    flow.add_argument("--device", action="store_true", help="approve a code at link.tidal.com, like a TV")
+    flow.add_argument("--pkce", action="store_true", help="log in in the browser and paste back the URL")
+    p.set_defaults(func=cmd_login_v1)
+
+    p = sub.add_parser("v1", help="the track through the private v1 API (its own login if there is one)")
     p.add_argument("id")
+    p.add_argument("--quality", default="HI_RES_LOSSLESS", choices=["LOW", "HIGH", "LOSSLESS", "HI_RES_LOSSLESS"])
+    p.add_argument("--play", action="store_true", help="play it with ffplay")
     p.set_defaults(func=cmd_v1)
 
     p = sub.add_parser("report", help="every check for one track, as JSON to paste back")

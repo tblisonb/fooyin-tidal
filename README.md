@@ -57,7 +57,18 @@ v2's track IDs look like the numbers v1 and TIDAL's links use; checking that nee
    tools/tidal-probe.py manifest <track ID> --play      # hear it, if there's no DRM (needs ffplay)
    ```
 
-The login is kept in `~/.config/fooyin-tidal/probe.json`, readable only by you.
+3. For playback, log in again with a client ID from one of TIDAL's own apps. The probe asks for the
+   ID and secret without showing them:
+
+   ```sh
+   tools/tidal-probe.py login-v1 --pkce       # browser login; paste back the "Oops" page's URL
+   tools/tidal-probe.py login-v1 --device     # or: approve a code at link.tidal.com
+   tools/tidal-probe.py v1 <track ID> --play  # full-length? what quality? (needs ffplay)
+   ```
+
+   Using these clients isn't sanctioned by TIDAL, and TIDAL can revoke them.
+
+The logins are kept in `~/.config/fooyin-tidal/probe.json`, readable only by you.
 
 ## Building
 
