@@ -8,8 +8,8 @@ This is an independent third-party plugin. It isn't part of fooyin or affiliated
 don't take problems with it to either project.
 
 **Status:** phase 0, a feasibility spike. The plugin plays TIDAL tracks you add by link or ID
-(**File > Add TIDAL track…**), at up to 24-bit FLAC. Seeking within a TIDAL track doesn't work yet,
-and the plugin can't log in by itself yet: `tools/tidal-probe.py` does that and hands it the login.
+(**File > Add TIDAL track…**), at up to 24-bit FLAC, with seeking. It can't log in by itself yet:
+`tools/tidal-probe.py` does that and hands it the login.
 
 ## How it fits together
 
@@ -85,8 +85,9 @@ Restart fooyin, then use **File > Add TIDAL track…** with a link such as
 `https://tidal.com/browse/track/58990486` or just the number. The track goes to the current
 playlist and plays like any other.
 
-`scripts/stream-check.sh <track ID>` runs the plugin's streaming code inside fooyin's sandbox without
-starting fooyin, and checks the result with ffprobe.
+`scripts/stream-check.sh <track ID> [start ms]` runs the plugin's streaming code inside fooyin's
+sandbox without starting fooyin, and checks the result with ffprobe. With a start position it
+streams from there, as a seek does.
 
 ## Building
 

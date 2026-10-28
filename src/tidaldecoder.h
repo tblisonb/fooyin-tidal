@@ -9,7 +9,11 @@
 
 #pragma once
 
+#include "tidalapi.h"
+
 #include <core/engine/audioinput.h>
+
+#include <QElapsedTimer>
 
 #include <atomic>
 #include <functional>
@@ -23,6 +27,9 @@ class TidalSession;
  * Plays tidal://track/<id>. When a track starts, asks TIDAL for its stream, downloads it through a
  * SegmentStreamDevice and hands that to fooyin's own FFmpeg decoder, which does the decoding.
  * Everything else is passed through to that decoder.
+ *
+ * Seeking restarts the download at the segment holding the target, with a fresh FFmpeg decoder
+ * (the segments carry their own timestamps), and drops decoded audio before the exact target.
  */
 class TidalDecoder : public Fooyin::AudioDecoder
 {
@@ -54,12 +61,30 @@ protected:
     void interruptRead() override;
 
 private:
+    bool fetchStream();
+    //! Downloads from the media segment at `segment` on (0 is the start) into a new FFmpeg decoder.
+    std::optional<Fooyin::AudioFormat> openStream(qsizetype segment);
+    void closeStream();
+    //! Drops the part of `buffer` before the seek target; true if anything is left.
+    bool trimToSeekTarget(Fooyin::AudioBuffer& buffer);
+
     std::shared_ptr<TidalSession> m_session;
     DecoderFactory m_createDecoder;
+
+    QString m_trackId;
+    Fooyin::Track m_track;
+    DecoderOptions m_options{None};
+    TidalStream m_stream;
+    //! Since m_stream was fetched: its segment URLs are signed and expire.
+    QElapsedTimer m_streamAge;
+    bool m_started{false};
+    //! Decoded audio before this position (ms) is dropped after a seek.
+    std::optional<uint64_t> m_seekTarget;
+
     // The decoder reads from the device, so it's declared after it and destroyed first.
-    std::unique_ptr<SegmentStreamDevice> m_device;
+    std::shared_ptr<SegmentStreamDevice> m_device;
     std::unique_ptr<Fooyin::AudioDecoder> m_decoder;
-    //! The device to abort; interruptRead() can run on another thread while init() sets up.
-    std::atomic<SegmentStreamDevice*> m_abortTarget{nullptr};
+    //! The device to abort; interruptRead() can run on another thread while a stream is (re)opened.
+    std::atomic<std::shared_ptr<SegmentStreamDevice>> m_abortTarget;
 };
 } // namespace FooyinTidal

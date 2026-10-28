@@ -1,9 +1,12 @@
 /*
  * Runs the plugin's own streaming code for one track, without fooyin: refreshes the playback login,
- * asks TIDAL for the stream, and downloads every segment through SegmentStreamDevice into a file,
+ * asks TIDAL for the stream, and downloads the segments through SegmentStreamDevice into a file,
  * which ffprobe can then check. scripts/stream-check.sh runs it inside fooyin's Flatpak.
  *
- *   stream-check <session.json> <track id or link> <output file>
+ * With a start position, downloads from the segment holding it, as a seek does: the file's first
+ * timestamp should then be that segment's start.
+ *
+ *   stream-check <session.json> <track id or link> <output file> [start ms]
  */
 
 #include "segmentstreamdevice.h"
@@ -16,6 +19,7 @@
 #include <QLoggingCategory>
 
 #include <cstdio>
+#include <cstdlib>
 
 Q_LOGGING_CATEGORY(TIDAL, "fooyin.tidal")
 
@@ -24,10 +28,11 @@ using namespace FooyinTidal;
 int main(int argc, char** argv)
 {
     const QCoreApplication app{argc, argv};
-    if(argc != 4) {
-        std::fprintf(stderr, "usage: stream-check <session.json> <track id or link> <output file>\n");
+    if(argc != 4 && argc != 5) {
+        std::fprintf(stderr, "usage: stream-check <session.json> <track id or link> <output file> [start ms]\n");
         return 2;
     }
+    const uint64_t startMs = argc == 5 ? std::strtoull(argv[4], nullptr, 10) : 0;
 
     auto session = std::make_shared<TidalSession>(QString::fromLocal8Bit(argv[1]));
     if(!session->isLoggedIn()) {
@@ -55,6 +60,15 @@ int main(int argc, char** argv)
     std::printf("Stream: %s, %d bit %d Hz, %s, %lld URLs\n", qPrintable(stream->audioQuality), stream->bitDepth,
                 stream->sampleRate, qPrintable(stream->codec), static_cast<long long>(stream->urls.size()));
 
+    QStringList urls = stream->urls;
+    if(startMs > 0 && !stream->segmentStartsMs.isEmpty()) {
+        const qsizetype segment = stream->segmentAt(startMs);
+        urls                    = stream->urlsFrom(segment);
+        std::printf("Starting at segment %lld of %lld, which starts at %llu ms\n", static_cast<long long>(segment + 1),
+                    static_cast<long long>(stream->segmentStartsMs.size()),
+                    static_cast<unsigned long long>(stream->segmentStartsMs.at(segment)));
+    }
+
     QFile out{QString::fromLocal8Bit(argv[3])};
     if(!out.open(QIODevice::WriteOnly)) {
         std::fprintf(stderr, "FAIL: can't write %s\n", argv[3]);
@@ -63,7 +77,7 @@ int main(int argc, char** argv)
 
     QElapsedTimer timer;
     timer.start();
-    SegmentStreamDevice device{stream->urls};
+    SegmentStreamDevice device{urls};
     if(!device.start()) {
         std::fprintf(stderr, "FAIL: couldn't start the download\n");
         return 1;

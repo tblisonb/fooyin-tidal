@@ -17,6 +17,8 @@
 #include <QRegularExpression>
 #include <QXmlStreamReader>
 
+#include <algorithm>
+
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -32,7 +34,10 @@ std::expected<FooyinTidal::TidalStream, QString> parseDash(const QByteArray& man
     QString initialization;
     QString media;
     int startNumber{1};
-    int segmentCount{0};
+    uint64_t timescale{1};
+    // Segment start times in the manifest's timescale, from its SegmentTimeline.
+    QList<uint64_t> starts;
+    uint64_t nextStart{0};
 
     QXmlStreamReader xml{manifest};
     while(!xml.atEnd()) {
@@ -53,22 +58,33 @@ std::expected<FooyinTidal::TidalStream, QString> parseDash(const QByteArray& man
             if(attrs.hasAttribute("startNumber"_L1)) {
                 startNumber = attrs.value("startNumber"_L1).toInt();
             }
+            timescale = std::max<uint64_t>(1, attrs.value("timescale"_L1).toULongLong());
         }
         else if(name == "S"_L1) {
-            segmentCount += 1 + attrs.value("r"_L1).toInt();
+            // <S t="start" d="duration" r="repeats after the first"/>; t is optional after the first.
+            if(attrs.hasAttribute("t"_L1)) {
+                nextStart = attrs.value("t"_L1).toULongLong();
+            }
+            const uint64_t duration = attrs.value("d"_L1).toULongLong();
+            const int repeats       = attrs.value("r"_L1).toInt();
+            for(int i{0}; i <= repeats; ++i) {
+                starts.append(nextStart);
+                nextStart += duration;
+            }
         }
     }
 
     if(xml.hasError()) {
         return std::unexpected(u"Couldn't read TIDAL's stream manifest: %1"_s.arg(xml.errorString()));
     }
-    if(initialization.isEmpty() || !media.contains("$Number$"_L1) || segmentCount == 0) {
+    if(initialization.isEmpty() || !media.contains("$Number$"_L1) || starts.isEmpty()) {
         return std::unexpected(u"TIDAL's stream manifest isn't in a form this plugin knows"_s);
     }
 
     stream.urls.append(initialization);
-    for(int i{0}; i < segmentCount; ++i) {
+    for(qsizetype i{0}; i < starts.size(); ++i) {
         stream.urls.append(QString{media}.replace("$Number$"_L1, QString::number(startNumber + i)));
+        stream.segmentStartsMs.append(starts.at(i) * 1000 / timescale);
     }
     return stream;
 }
@@ -97,6 +113,20 @@ std::expected<FooyinTidal::TidalStream, QString> parseBts(const QByteArray& mani
 } // namespace
 
 namespace FooyinTidal {
+qsizetype TidalStream::segmentAt(uint64_t ms) const
+{
+    const auto it = std::upper_bound(segmentStartsMs.cbegin(), segmentStartsMs.cend(), ms);
+    return std::max<qsizetype>(0, std::distance(segmentStartsMs.cbegin(), it) - 1);
+}
+
+QStringList TidalStream::urlsFrom(qsizetype segment) const
+{
+    if(segmentStartsMs.isEmpty() || segment <= 0) {
+        return urls;
+    }
+    return QStringList{urls.constFirst()} + urls.mid(1 + segment);
+}
+
 QString trackPath(const QString& trackId)
 {
     return u"%1://track/%2"_s.arg(QLatin1StringView{Scheme}, trackId);

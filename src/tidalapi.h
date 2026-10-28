@@ -33,6 +33,15 @@ struct TidalStream
     //! Every URL to fetch, in order; joined, they make one file (for DASH, a fragmented MP4).
     QStringList urls;
     QString codec;
+    //! For DASH: where each media segment starts, in ms. urls[0] is the initialization segment and
+    //! urls[i + 1] the media segment starting at segmentStartsMs[i]. Empty for a single file.
+    QList<uint64_t> segmentStartsMs;
+
+    //! The media segment holding `ms` (the last one starting at or before it), as an index into
+    //! segmentStartsMs. Only for DASH streams.
+    [[nodiscard]] qsizetype segmentAt(uint64_t ms) const;
+    //! The URLs to fetch to play from `segment` on: the initialization segment, then the rest.
+    [[nodiscard]] QStringList urlsFrom(qsizetype segment) const;
 };
 
 /*!
