@@ -36,9 +36,11 @@ TOKEN_URL = "https://auth.tidal.com/v1/oauth2/token"
 API_V2 = "https://openapi.tidal.com/v2"
 API_V1 = "https://api.tidal.com/v1"
 DEFAULT_PORT = 47130
-# trackManifests asks for playback and r_usr; the rest are what the plugin will use.
+# The scopes a developer app can enable and the plugin will use. The API reference also lists the
+# legacy r_usr for trackManifests, but the developer dashboard doesn't offer it, and asking for a
+# scope the app lacks can make TIDAL's login page refuse the request.
 DEFAULT_SCOPES = ("user.read collection.read collection.write playlists.read playlists.write "
-                  "search.read playback r_usr")
+                  "search.read playback")
 
 STATE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "fooyin-tidal")
 STATE_FILE = os.path.join(STATE_DIR, "probe.json")
@@ -118,7 +120,8 @@ def cmd_login(args):
 
     server = http.server.HTTPServer(("127.0.0.1", args.port), Callback)
     print(f"Opening TIDAL's login page. If no browser opens, visit:\n\n  {url}\n")
-    print(f"(Your app's redirect URI must be exactly {redirect_uri})")
+    print(f"Your app's redirect URI must be exactly {redirect_uri}")
+    print(f"and it must have every one of these scopes enabled: {args.scopes}\n")
     webbrowser.open(url)
     while not result:
         server.handle_request()
