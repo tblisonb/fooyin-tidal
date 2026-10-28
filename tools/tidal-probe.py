@@ -191,10 +191,11 @@ def included(doc, kind):
 
 def cmd_search(args):
     state = load_state()
-    doc = v2(state, f"/searchResults/{urllib.parse.quote(args.query, safe='')}/relationships/tracks",
-             {"countryCode": country(state), "include": "tracks"})
+    # A collection holding exactly one search result, whose tracks relationship lists them in order.
+    doc = v2(state, "/searchResults", {"filter[query]": args.query, "countryCode": country(state), "include": "tracks"})
     tracks = included(doc, "tracks")
-    for ref in doc.get("data", [])[:args.limit]:
+    result = doc["data"][0] if doc.get("data") else {}
+    for ref in result.get("relationships", {}).get("tracks", {}).get("data", [])[:args.limit]:
         attrs = tracks.get(ref["id"], {}).get("attributes", {})
         print(f"{ref['id']:>12}  {attrs.get('title', '?')}  ({attrs.get('duration', '')})")
 

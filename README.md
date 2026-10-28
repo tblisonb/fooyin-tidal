@@ -28,6 +28,21 @@ don't take problems with it to either project.
 3. If it doesn't: does TIDAL's private v1 API (the one Strawberry uses for playback) accept the same
    login, and do the two APIs share track IDs?
 
+### What the probe found (2026-10-27, fooyin 0.14.1)
+
+1. **Login works** with PKCE and a `localhost` redirect, as long as the app asks only for scopes the
+   developer dashboard offers (asking for the legacy `r_usr` got login error 1002).
+2. **v2 manifests have no DRM, but they're previews.** `/trackManifests/{id}` gives FLAC (16-bit
+   44.1 kHz) or AAC in DASH or HLS, with track and album ReplayGain values, but every track comes as
+   `trackPresentation: PREVIEW`, 29 seconds long, with `previewReason: FULL_REQUIRES_HIGHER_ACCESS_TIER`.
+   Developer accounts are on the `THIRD_PARTY` tier.
+3. **v1 refuses a developer app's login** ("Client does not have required access tier").
+
+So full-length playback needs a second login with a client ID from TIDAL's own apps (as Strawberry
+does), and that login is used only for v1's playback info. Everything else stays on the official API.
+v2's track IDs are the same numbers v1 and TIDAL's own links use. Search is
+`GET /searchResults?filter[query]=…`; the older `/searchResults/{query}` form now returns 400.
+
 ### Running the probe
 
 1. Sign in at <https://developer.tidal.com/dashboard> and create an app. Add the redirect URI
