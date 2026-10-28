@@ -15,6 +15,7 @@ Standard library only. Logins are kept in ~/.config/fooyin-tidal/probe.json (rea
   tools/tidal-probe.py manifest <id> [--play]     # question 2
   tools/tidal-probe.py v1 <id> [--play]           # questions 3 and 4
   tools/tidal-probe.py report <id>                # all of the above, for pasting back
+  tools/tidal-probe.py export-session             # give the playback login to the fooyin plugin
 """
 
 import argparse
@@ -356,6 +357,26 @@ def cmd_login_v1(args):
     print("Logged in for playback.")
 
 
+# Where the plugin keeps its playback login, inside fooyin's Flatpak.
+PLUGIN_SESSION = os.path.expanduser("~/.var/app/org.fooyin.fooyin/config/fooyin/tidal/session.json")
+
+
+def cmd_export_session(args):
+    """Hands the playback login to the plugin, until the plugin can log in by itself."""
+    state = load_state()
+    v1 = state.get("v1")
+    if not v1:
+        sys.exit("No playback login yet. Run: tools/tidal-probe.py login-v1 --pkce")
+    session = {k: v1.get(k, "") for k in ("client_id", "client_secret", "access_token", "refresh_token")}
+    session["expires_at"] = v1.get("expires_at", 0)
+    session["country"] = country(state)
+    os.makedirs(os.path.dirname(PLUGIN_SESSION), mode=0o700, exist_ok=True)
+    fd = os.open(PLUGIN_SESSION, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(session, f, indent=2)
+    print(f"Wrote {PLUGIN_SESSION}. Restart fooyin to pick it up.")
+
+
 def v1_access_token(state):
     v1 = state.get("v1")
     if not v1:
@@ -480,6 +501,9 @@ def main():
     flow.add_argument("--device", action="store_true", help="approve a code at link.tidal.com, like a TV")
     flow.add_argument("--pkce", action="store_true", help="log in in the browser and paste back the URL")
     p.set_defaults(func=cmd_login_v1)
+
+    p = sub.add_parser("export-session", help="hand the playback login to the fooyin plugin")
+    p.set_defaults(func=cmd_export_session)
 
     p = sub.add_parser("v1", help="the track through the private v1 API (its own login if there is one)")
     p.add_argument("id")

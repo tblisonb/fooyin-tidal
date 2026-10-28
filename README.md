@@ -7,8 +7,9 @@ fooyin.
 This is an independent third-party plugin. It isn't part of fooyin or affiliated with TIDAL, so please
 don't take problems with it to either project.
 
-**Status:** phase 0, a feasibility spike. The plugin builds and loads but doesn't do anything yet;
-`tools/tidal-probe.py` tests what TIDAL's APIs allow before the plugin depends on it.
+**Status:** phase 0, a feasibility spike. The plugin plays TIDAL tracks you add by link or ID
+(**File > Add TIDAL track…**), at up to 24-bit FLAC. Seeking within a TIDAL track doesn't work yet,
+and the plugin can't log in by itself yet: `tools/tidal-probe.py` does that and hands it the login.
 
 ## How it fits together
 
@@ -16,8 +17,9 @@ don't take problems with it to either project.
   [developer API](https://developer.tidal.com) (`openapi.tidal.com/v2`), signed in with your own
   developer app.
 - **Playback** registers a `tidal:` URL scheme with fooyin. When a TIDAL track starts, the plugin asks
-  TIDAL for that track's stream and hands it to fooyin's own decoders. Which API gives a stream fooyin
-  can play is what phase 0 finds out (see below).
+  TIDAL's private v1 API for the track's stream, with a second login made with a client of one of
+  TIDAL's own apps (developer apps only get previews; see below). The stream is DASH: the plugin
+  downloads its segments in order, and fooyin's own FFmpeg decoder plays them as one MP4.
 
 ## Phase 0: what needs answering
 
@@ -69,6 +71,22 @@ v2's track IDs look like the numbers v1 and TIDAL's links use; checking that nee
    Using these clients isn't sanctioned by TIDAL, and TIDAL can revoke them.
 
 The logins are kept in `~/.config/fooyin-tidal/probe.json`, readable only by you.
+
+## Trying it
+
+After the probe's playback login (`login-v1` above):
+
+```sh
+tools/tidal-probe.py export-session   # give the plugin the playback login
+scripts/build.sh && scripts/install.sh
+```
+
+Restart fooyin, then use **File > Add TIDAL track…** with a link such as
+`https://tidal.com/browse/track/58990486` or just the number. The track goes to the current
+playlist and plays like any other.
+
+`scripts/stream-check.sh <track ID>` runs the plugin's streaming code inside fooyin's sandbox without
+starting fooyin, and checks the result with ffprobe.
 
 ## Building
 

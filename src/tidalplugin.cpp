@@ -9,13 +9,128 @@
 
 #include "tidalplugin.h"
 
+#include "tidalapi.h"
+#include "tidaldecoder.h"
+#include "tidalsession.h"
+
+#include <core/engine/audioloader.h>
+#include <core/plugins/coreplugincontext.h>
+#include <gui/guiconstants.h>
+#include <gui/playlist/playlistinteractor.h>
+#include <gui/plugins/guiplugincontext.h>
+#include <utils/actions/actioncontainer.h>
+#include <utils/actions/actionmanager.h>
+#include <utils/actions/command.h>
+#include <utils/fypaths.h>
+#include <utils/utils.h>
+
+#include <QAction>
+#include <QDir>
+#include <QFutureWatcher>
+#include <QInputDialog>
 #include <QLoggingCategory>
+#include <QMainWindow>
+#include <QMessageBox>
+#include <QtConcurrentRun>
 
 Q_LOGGING_CATEGORY(TIDAL, "fooyin.tidal")
 
+using namespace Qt::StringLiterals;
+
 namespace FooyinTidal {
-void TidalPlugin::initialise(const Fooyin::CorePluginContext& /*context*/)
+void TidalPlugin::initialise(const Fooyin::CorePluginContext& context)
 {
-    qCInfo(TIDAL) << "TIDAL plugin" << FOOYIN_TIDAL_VERSION << "loaded";
+    m_audioLoader = context.audioLoader;
+
+    // In the Flatpak this is ~/.var/app/org.fooyin.fooyin/config/fooyin/tidal.
+    const QString dir = Fooyin::Utils::configPath(u"tidal"_s);
+    QDir{}.mkpath(dir);
+    m_session = std::make_shared<TidalSession>(dir + u"/session.json"_s);
+
+    qCInfo(TIDAL) << "TIDAL plugin" << FOOYIN_TIDAL_VERSION << "loaded;"
+                  << (m_session->isLoggedIn() ? "logged in for playback" : "not logged in for playback");
+}
+
+void TidalPlugin::initialise(const Fooyin::GuiPluginContext& context)
+{
+    m_playlistInteractor = context.playlistInteractor;
+
+    auto* addTrackAction = new QAction(tr("Add &TIDAL track…"), this);
+    addTrackAction->setStatusTip(tr("Add a TIDAL track to the current playlist by its link or ID"));
+    auto* command = context.actionManager->registerAction(addTrackAction, "Tidal.AddTrack");
+    command->setCategories({tr("File")});
+    context.actionManager->actionContainer(Fooyin::Constants::Menus::File)->addAction(command);
+    QObject::connect(addTrackAction, &QAction::triggered, this, &TidalPlugin::addTrack);
+}
+
+QString TidalPlugin::inputName() const
+{
+    return u"TIDAL"_s;
+}
+
+Fooyin::InputCreator TidalPlugin::inputCreator() const
+{
+    Fooyin::InputCreator creator;
+    creator.decoder = [session = m_session, weakLoader = m_audioLoader]() {
+        // TIDAL's audio is FLAC (or AAC) in MP4, which fooyin's own FFmpeg decoder handles.
+        auto createFFmpeg = [weakLoader]() -> std::unique_ptr<Fooyin::AudioDecoder> {
+            const auto loader = weakLoader.lock();
+            if(!loader) {
+                return nullptr;
+            }
+            for(const auto& entry : loader->decoders()) {
+                if(entry.name == "FFmpeg"_L1 && entry.creator) {
+                    return entry.creator();
+                }
+            }
+            return nullptr;
+        };
+        return std::make_unique<TidalDecoder>(session, createFFmpeg);
+    };
+    return creator;
+}
+
+void TidalPlugin::addTrack()
+{
+    auto* window = Fooyin::Utils::getMainWindow();
+
+    if(!m_session->isLoggedIn()) {
+        QMessageBox::information(window, tr("TIDAL"),
+                                 tr("Not logged in to TIDAL for playback yet. For now, log in with "
+                                    "tools/tidal-probe.py login-v1, then run tools/tidal-probe.py export-session "
+                                    "and restart fooyin."));
+        return;
+    }
+
+    bool ok{false};
+    const QString text = QInputDialog::getText(window, tr("Add TIDAL Track"), tr("TIDAL track link or ID:"),
+                                               QLineEdit::Normal, {}, &ok);
+    if(!ok) {
+        return;
+    }
+
+    const QString trackId = trackIdFrom(text);
+    if(trackId.isEmpty()) {
+        QMessageBox::warning(window, tr("TIDAL"), tr("That isn't a TIDAL track link or ID."));
+        return;
+    }
+
+    using Result  = std::expected<Fooyin::Track, QString>;
+    auto* watcher = new QFutureWatcher<Result>(this);
+    QObject::connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, window]() {
+        const Result result = watcher->result();
+        watcher->deleteLater();
+        if(!result) {
+            QMessageBox::warning(window, tr("TIDAL"), tr("Couldn't get that track: %1").arg(result.error()));
+            return;
+        }
+        m_playlistInteractor->tracksToCurrentPlaylist({*result});
+    });
+    watcher->setFuture(QtConcurrent::run([session = m_session, trackId]() {
+        TidalApi api{session};
+        return api.track(trackId);
+    }));
 }
 } // namespace FooyinTidal
+
+#include "moc_tidalplugin.cpp"

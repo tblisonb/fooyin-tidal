@@ -9,21 +9,45 @@
 
 #pragma once
 
+#include <core/engine/inputplugin.h>
 #include <core/plugins/coreplugin.h>
 #include <core/plugins/plugin.h>
+#include <gui/plugins/guiplugin.h>
 
 #include <QObject>
 
+#include <memory>
+
+namespace Fooyin {
+class AudioLoader;
+class PlaylistInteractor;
+} // namespace Fooyin
+
 namespace FooyinTidal {
+class TidalSession;
+
 class TidalPlugin : public QObject,
                     public Fooyin::Plugin,
-                    public Fooyin::CorePlugin
+                    public Fooyin::CorePlugin,
+                    public Fooyin::GuiPlugin,
+                    public Fooyin::InputPlugin
 {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID FOOYIN_PLUGIN_IID FILE "tidal.json")
-    Q_INTERFACES(Fooyin::Plugin Fooyin::CorePlugin)
+    Q_INTERFACES(Fooyin::Plugin Fooyin::CorePlugin Fooyin::GuiPlugin Fooyin::InputPlugin)
 
 public:
     void initialise(const Fooyin::CorePluginContext& context) override;
+    void initialise(const Fooyin::GuiPluginContext& context) override;
+
+    [[nodiscard]] QString inputName() const override;
+    [[nodiscard]] Fooyin::InputCreator inputCreator() const override;
+
+private:
+    void addTrack();
+
+    std::weak_ptr<Fooyin::AudioLoader> m_audioLoader;
+    std::shared_ptr<TidalSession> m_session;
+    Fooyin::PlaylistInteractor* m_playlistInteractor{nullptr};
 };
 } // namespace FooyinTidal

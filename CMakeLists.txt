@@ -7,13 +7,13 @@ project(
     LANGUAGES CXX
 )
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Fooyin's development files, built for the installed Flatpak by scripts/build-fooyin.sh.
 find_package(Fooyin REQUIRED)
-find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Concurrent Network Widgets)
 
 add_subdirectory(src)
 add_subdirectory(tools)

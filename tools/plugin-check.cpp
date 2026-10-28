@@ -6,6 +6,7 @@
  *   plugin-check <plugin.so>
  */
 
+#include <core/engine/inputplugin.h>
 #include <core/plugins/coreplugin.h>
 #include <core/plugins/plugin.h>
 
@@ -46,5 +47,8 @@ int main(int argc, char** argv)
     std::printf("OK: %s %s\n", qPrintable(metadata.value(u"Name").toString()),
                 qPrintable(metadata.value(u"Version").toString()));
     std::printf("  core plugin: %s\n", qobject_cast<Fooyin::CorePlugin*>(root) ? "yes" : "no");
+    std::printf("  input plugin: %s\n", qobject_cast<Fooyin::InputPlugin*>(root) ? "yes" : "no");
+    // GuiPlugin lives in fooyin's GUI library, which this tool doesn't link, so ask by interface ID.
+    std::printf("  gui plugin: %s\n", root->qt_metacast("org.fooyin.fooyin.plugin.gui") ? "yes" : "no");
     return 0;
 }
