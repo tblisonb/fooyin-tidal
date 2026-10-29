@@ -21,6 +21,7 @@
 namespace Fooyin {
 class AudioLoader;
 class PlaylistInteractor;
+class SettingsManager;
 } // namespace Fooyin
 
 namespace FooyinTidal {
@@ -47,6 +48,10 @@ private:
     void addTrack();
 
     std::weak_ptr<Fooyin::AudioLoader> m_audioLoader;
+    Fooyin::SettingsManager* m_settings{nullptr};
+    //! The official API's login.
+    std::shared_ptr<TidalSession> m_account;
+    //! The playback login.
     std::shared_ptr<TidalSession> m_session;
     Fooyin::PlaylistInteractor* m_playlistInteractor{nullptr};
 };

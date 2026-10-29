@@ -12,7 +12,9 @@
 #include "blockinghttp.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
@@ -24,14 +26,14 @@ using namespace Qt::StringLiterals;
 
 namespace {
 constexpr auto TokenUrl = "https://auth.tidal.com/v1/oauth2/token";
-constexpr auto Scopes   = "r_usr w_usr w_sub";
 // Refresh a minute early so a token doesn't expire between handing it out and using it.
 constexpr qint64 ExpiryMarginSecs = 60;
 } // namespace
 
 namespace FooyinTidal {
-TidalSession::TidalSession(QString path)
+TidalSession::TidalSession(QString path, QString refreshScope)
     : m_path{std::move(path)}
+    , m_refreshScope{std::move(refreshScope)}
 {
     load();
 }
@@ -46,6 +48,59 @@ QString TidalSession::countryCode() const
 {
     const std::scoped_lock lock{m_mutex};
     return m_countryCode.isEmpty() ? u"US"_s : m_countryCode;
+}
+
+QString TidalSession::userId() const
+{
+    const std::scoped_lock lock{m_mutex};
+    return m_userId;
+}
+
+QString TidalSession::clientId() const
+{
+    const std::scoped_lock lock{m_mutex};
+    return m_clientId;
+}
+
+QString TidalSession::clientSecret() const
+{
+    const std::scoped_lock lock{m_mutex};
+    return m_clientSecret;
+}
+
+void TidalSession::setLogin(const QString& clientId, const QString& clientSecret, const QJsonObject& token,
+                            const QString& countryCode)
+{
+    const std::scoped_lock lock{m_mutex};
+    m_clientId     = clientId;
+    m_clientSecret = clientSecret;
+    m_countryCode  = countryCode;
+    m_refreshToken.clear();
+    m_userId.clear();
+    storeToken(token);
+    save();
+}
+
+void TidalSession::logOut()
+{
+    const std::scoped_lock lock{m_mutex};
+    m_accessToken.clear();
+    m_refreshToken.clear();
+    m_userId.clear();
+    m_expiresAt = 0;
+    save();
+}
+
+void TidalSession::storeToken(const QJsonObject& token)
+{
+    m_accessToken = token.value("access_token"_L1).toString();
+    m_expiresAt   = QDateTime::currentSecsSinceEpoch() + token.value("expires_in"_L1).toInteger(3600);
+    if(const QString refresh = token.value("refresh_token"_L1).toString(); !refresh.isEmpty()) {
+        m_refreshToken = refresh;
+    }
+    if(const QJsonValue user = token.value("user_id"_L1); !user.isUndefined() && !user.isNull()) {
+        m_userId = user.isString() ? user.toString() : QString::number(user.toInteger());
+    }
 }
 
 std::expected<QString, QString> TidalSession::accessToken(BlockingHttp& http)
@@ -65,7 +120,9 @@ std::expected<QString, QString> TidalSession::accessToken(BlockingHttp& http)
     form.addQueryItem(u"grant_type"_s, u"refresh_token"_s);
     form.addQueryItem(u"client_id"_s, m_clientId);
     form.addQueryItem(u"refresh_token"_s, m_refreshToken);
-    form.addQueryItem(u"scope"_s, QString::fromLatin1(Scopes));
+    if(!m_refreshScope.isEmpty()) {
+        form.addQueryItem(u"scope"_s, m_refreshScope);
+    }
     if(!m_clientSecret.isEmpty()) {
         form.addQueryItem(u"client_secret"_s, m_clientSecret);
     }
@@ -75,18 +132,13 @@ std::expected<QString, QString> TidalSession::accessToken(BlockingHttp& http)
         return std::unexpected(u"Couldn't refresh the TIDAL login: %1"_s.arg(result.describe()));
     }
 
-    const QJsonObject token = QJsonDocument::fromJson(result.body).object();
-    m_accessToken           = token.value("access_token"_L1).toString();
-    m_expiresAt             = now + token.value("expires_in"_L1).toInteger(3600);
-    if(const QString refresh = token.value("refresh_token"_L1).toString(); !refresh.isEmpty()) {
-        m_refreshToken = refresh;
-    }
+    storeToken(QJsonDocument::fromJson(result.body).object());
     if(m_accessToken.isEmpty()) {
         return std::unexpected(u"TIDAL's token reply had no access token"_s);
     }
 
     save();
-    qCInfo(TIDAL) << "Refreshed the TIDAL playback login";
+    qCInfo(TIDAL) << "Refreshed the TIDAL login in" << QFileInfo{m_path}.fileName();
     return m_accessToken;
 }
 
@@ -103,6 +155,7 @@ void TidalSession::load()
     m_accessToken          = json.value("access_token"_L1).toString();
     m_refreshToken         = json.value("refresh_token"_L1).toString();
     m_countryCode          = json.value("country"_L1).toString();
+    m_userId               = json.value("user_id"_L1).toString();
     m_expiresAt            = static_cast<qint64>(json.value("expires_at"_L1).toDouble());
 }
 
@@ -114,8 +167,10 @@ void TidalSession::save() const
     json["access_token"_L1]  = m_accessToken;
     json["refresh_token"_L1] = m_refreshToken;
     json["country"_L1]       = m_countryCode;
+    json["user_id"_L1]       = m_userId;
     json["expires_at"_L1]    = static_cast<double>(m_expiresAt);
 
+    QDir{}.mkpath(QFileInfo{m_path}.path());
     QSaveFile file{m_path};
     if(!file.open(QIODevice::WriteOnly)) {
         qCWarning(TIDAL) << "Couldn't save the TIDAL login to" << m_path;

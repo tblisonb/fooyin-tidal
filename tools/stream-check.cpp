@@ -11,6 +11,7 @@
 
 #include "segmentstreamdevice.h"
 #include "tidalapi.h"
+#include "tidallogin.h"
 #include "tidalsession.h"
 
 #include <QCoreApplication>
@@ -34,7 +35,7 @@ int main(int argc, char** argv)
     }
     const uint64_t startMs = argc == 5 ? std::strtoull(argv[4], nullptr, 10) : 0;
 
-    auto session = std::make_shared<TidalSession>(QString::fromLocal8Bit(argv[1]));
+    auto session = std::make_shared<TidalSession>(QString::fromLocal8Bit(argv[1]), TidalLogin::playbackScopes());
     if(!session->isLoggedIn()) {
         std::fprintf(stderr, "FAIL: no playback login in %s\n", argv[1]);
         return 1;

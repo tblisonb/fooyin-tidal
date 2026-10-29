@@ -13,7 +13,7 @@ cd "$repo"
 [[ -x build/tools/stream-check ]] || { echo "Build it first: scripts/build.sh" >&2; exit 1; }
 
 session="$HOME/.var/app/org.fooyin.fooyin/config/fooyin/tidal/session.json"
-[[ -f "$session" ]] || { echo "No playback login for the plugin: run tools/tidal-probe.py export-session" >&2; exit 1; }
+[[ -f "$session" ]] || { echo "No playback login for the plugin: log in under Settings > Integrations > TIDAL in fooyin" >&2; exit 1; }
 
 mkdir -p build/stream-check
 id="$(basename "$1")"

@@ -7,6 +7,8 @@ add_library(
     segmentstreamdevice.h
     tidalapi.cpp
     tidalapi.h
+    tidallogin.cpp
+    tidallogin.h
     tidalsession.cpp
     tidalsession.h
 )
@@ -20,10 +22,14 @@ create_fooyin_plugin(
             Fooyin::Gui
             Qt6::Concurrent
             Qt6::Widgets
-    SOURCES tidaldecoder.cpp
+    SOURCES callbackserver.cpp
+            callbackserver.h
+            tidaldecoder.cpp
             tidaldecoder.h
             tidalplugin.cpp
             tidalplugin.h
+            tidalsettingspage.cpp
+            tidalsettingspage.h
 )
 
 target_compile_definitions(tidal PRIVATE FOOYIN_TIDAL_VERSION="${PROJECT_VERSION}")

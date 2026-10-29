@@ -7,9 +7,9 @@ fooyin.
 This is an independent third-party plugin. It isn't part of fooyin or affiliated with TIDAL, so please
 don't take problems with it to either project.
 
-**Status:** phase 0, a feasibility spike. The plugin plays TIDAL tracks you add by link or ID
-(**File > Add TIDAL track…**), at up to 24-bit FLAC, with seeking. It can't log in by itself yet:
-`tools/tidal-probe.py` does that and hands it the login.
+**Status:** early (phase 1 under way). The plugin plays TIDAL tracks you add by link or ID
+(**File > Add TIDAL track…**), at up to 24-bit FLAC, with seeking, and logs in from fooyin's settings.
+Search, favorites and playlists are next.
 
 Design notes, what was learned about fooyin and TIDAL, and the plan ahead are in
 [docs/design.md](docs/design.md).
@@ -77,14 +77,23 @@ The logins are kept in `~/.config/fooyin-tidal/probe.json`, readable only by you
 
 ## Trying it
 
-After the probe's playback login (`login-v1` above):
-
 ```sh
-tools/tidal-probe.py export-session   # give the plugin the playback login
 scripts/build.sh && scripts/install.sh
 ```
 
-Restart fooyin, then use **File > Add TIDAL track…** with a link such as
+Restart fooyin and open **Settings > Integrations > TIDAL**, which has two logins:
+
+- **TIDAL Account**, for search, favorites and playlists (not used yet): the client ID of your
+  developer app (see "Running the probe" above for setting one up). **Log In** opens TIDAL's login
+  page, which comes back to fooyin by itself.
+- **Playback**: the client ID and secret of one of TIDAL's own apps. **Log In** opens TIDAL's login
+  page, which ends on an "Oops" page; copy that page's whole address into the box under it and
+  press **Finish Login**.
+
+The logins are kept in `~/.var/app/org.fooyin.fooyin/config/fooyin/tidal/` (`account.json` and
+`session.json`), readable only by you.
+
+Then use **File > Add TIDAL track…** with a link such as
 `https://tidal.com/browse/track/58990486` or just the number. The track goes to the current
 playlist and plays like any other.
 

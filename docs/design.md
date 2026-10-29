@@ -34,13 +34,16 @@ playlist entry tidal://track/<id>
 
 | File | What it does |
 |---|---|
-| `src/tidalplugin.*` | The plugin: core (session), input (decoder registration), GUI (File > Add TIDAL track…). |
+| `src/tidalplugin.*` | The plugin: core (logins), input (decoder registration), GUI (settings page, File > Add TIDAL track…). |
+| `src/tidalsettingspage.*` | Settings > Integrations > TIDAL: the account and playback logins. |
+| `src/callbackserver.*` | Waits on `localhost:47130` for the browser to come back from the account login. |
+| `src/tidallogin.*` | Both logins' PKCE requests, code exchange, and the country lookup; blocking. |
 | `src/tidaldecoder.*` | Wraps fooyin's FFmpeg decoder; fetches the stream, seeks, trims after a seek. |
 | `src/segmentstreamdevice.*` | Sequential `QIODevice` over URLs fetched one after another. |
 | `src/tidalapi.*` | v1 calls (track details, playbackinfo), DASH/BTS manifest parsing, `tidal://` paths. |
-| `src/tidalsession.*` | The playback login in `session.json`; refreshes the access token, thread-safe. |
+| `src/tidalsession.*` | One login in a JSON file (`account.json`, `session.json`); refreshes its token, thread-safe. |
 | `src/blockinghttp.*` | Synchronous HTTP for threads without an event loop (fooyin's decoder threads). |
-| `tools/tidal-probe.py` | Python probe of both APIs; holds the logins; `export-session` feeds the plugin. |
+| `tools/tidal-probe.py` | Python probe of both APIs, with its own copy of the logins (`~/.config/fooyin-tidal`). |
 | `tools/plugin-check.cpp` | Loads the plugin in fooyin's sandbox against the Flatpak's libraries. |
 | `tools/stream-check.cpp` | Runs the streaming code for one track in fooyin's sandbox, optionally from a position. |
 
@@ -131,12 +134,13 @@ Track IDs to test with: `58990486` (Radiohead, "Creep", CD quality) and `2901368
 
 Roughly in this order:
 
-1. **Logins in fooyin's settings.** A settings page (see `PluginConfigGuiPlugin` and Radio
-   Browser's settings) with: the developer app's client ID and a v2 login (PKCE with a localhost
-   redirect: fooyin's Flatpak has network access, so a local listener should work), and the playback
-   login (client ID and secret, browser login, then a box to paste the "Oops" URL). Store tokens in
-   the plugin's config folder as now, and retire `export-session`. Open question: whether to keep
-   secrets in KWallet/Secret Service via a portal instead of a file.
+1. **Logins in fooyin's settings.** Done (2026-10-28), waiting to be tried with real logins: a
+   settings page (a `SettingsPage` like the scrobbler's, under Integrations) with the account login
+   (PKCE, the browser returning to `CallbackServer` on `localhost:47130`) and the playback login
+   (browser login, then the "Oops" address pasted into a box). Tokens are in `account.json` and
+   `session.json` (mode 0600) in the plugin's config folder; the probe's `export-session` is gone.
+   The account's country comes from v2 `/users/me`, the playback login's from v1 `/sessions`.
+   Open question: whether to keep secrets in KWallet/Secret Service via a portal instead of a file.
 2. **A TIDAL panel** (a widget registered with fooyin's `WidgetProvider`, as Radio Browser does):
    search (tracks, albums, artists, playlists), your favorites, your playlists; double-click plays
    in context, the rest of the album or list following.

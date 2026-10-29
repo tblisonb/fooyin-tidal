@@ -11,7 +11,9 @@
 
 #include "tidalapi.h"
 #include "tidaldecoder.h"
+#include "tidallogin.h"
 #include "tidalsession.h"
+#include "tidalsettingspage.h"
 
 #include <core/engine/audioloader.h>
 #include <core/plugins/coreplugincontext.h>
@@ -22,10 +24,11 @@
 #include <utils/actions/actionmanager.h>
 #include <utils/actions/command.h>
 #include <utils/fypaths.h>
+#include <utils/settings/settingsdialogcontroller.h>
+#include <utils/settings/settingsmanager.h>
 #include <utils/utils.h>
 
 #include <QAction>
-#include <QDir>
 #include <QFutureWatcher>
 #include <QInputDialog>
 #include <QLoggingCategory>
@@ -41,13 +44,15 @@ namespace FooyinTidal {
 void TidalPlugin::initialise(const Fooyin::CorePluginContext& context)
 {
     m_audioLoader = context.audioLoader;
+    m_settings    = context.settingsManager;
 
     // In the Flatpak this is ~/.var/app/org.fooyin.fooyin/config/fooyin/tidal.
     const QString dir = Fooyin::Utils::configPath(u"tidal"_s);
-    QDir{}.mkpath(dir);
-    m_session = std::make_shared<TidalSession>(dir + u"/session.json"_s);
+    m_account         = std::make_shared<TidalSession>(dir + u"/account.json"_s, QString{});
+    m_session         = std::make_shared<TidalSession>(dir + u"/session.json"_s, TidalLogin::playbackScopes());
 
     qCInfo(TIDAL) << "TIDAL plugin" << FOOYIN_TIDAL_VERSION << "loaded;"
+                  << (m_account->isLoggedIn() ? "account logged in;" : "account not logged in;")
                   << (m_session->isLoggedIn() ? "logged in for playback" : "not logged in for playback");
 }
 
@@ -61,6 +66,8 @@ void TidalPlugin::initialise(const Fooyin::GuiPluginContext& context)
     command->setCategories({tr("File")});
     context.actionManager->actionContainer(Fooyin::Constants::Menus::File)->addAction(command);
     QObject::connect(addTrackAction, &QAction::triggered, this, &TidalPlugin::addTrack);
+
+    new TidalSettingsPage(m_settings->settingsDialog(), m_account, m_session, this);
 }
 
 QString TidalPlugin::inputName() const
@@ -95,10 +102,11 @@ void TidalPlugin::addTrack()
     auto* window = Fooyin::Utils::getMainWindow();
 
     if(!m_session->isLoggedIn()) {
-        QMessageBox::information(window, tr("TIDAL"),
-                                 tr("Not logged in to TIDAL for playback yet. For now, log in with "
-                                    "tools/tidal-probe.py login-v1, then run tools/tidal-probe.py export-session "
-                                    "and restart fooyin."));
+        const auto answer = QMessageBox::question(
+            window, tr("TIDAL"), tr("Not logged in to TIDAL for playback yet. Open the TIDAL settings to log in?"));
+        if(answer == QMessageBox::Yes) {
+            m_settings->settingsDialog()->openAtPage(SettingsPageId);
+        }
         return;
     }
 
