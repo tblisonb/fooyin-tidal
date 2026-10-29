@@ -35,6 +35,8 @@ playlist entry tidal://track/<id>
 | File | What it does |
 |---|---|
 | `src/tidalplugin.*` | The plugin: core (logins), input (decoder registration), GUI (settings page, File > Add TIDAL track…). |
+| `src/tidalbrowser.*` | The TIDAL panel (View > TIDAL, or a layout widget): search, favorites, playlists. |
+| `src/tidalcatalog.*` | Official API calls for the panel, as `TidalItem`s (tracks become fooyin tracks); blocking. |
 | `src/tidalsettingspage.*` | Settings > Integrations > TIDAL: the account and playback logins. |
 | `src/callbackserver.*` | Waits on `localhost:47130` for the browser to come back from the account login. |
 | `src/tidallogin.*` | Both logins' PKCE requests, code exchange, and the country lookup; blocking. |
@@ -45,6 +47,7 @@ playlist entry tidal://track/<id>
 | `src/blockinghttp.*` | Synchronous HTTP for threads without an event loop (fooyin's decoder threads). |
 | `tools/tidal-probe.py` | Python probe of both APIs, with its own copy of the logins (`~/.config/fooyin-tidal`). |
 | `tools/plugin-check.cpp` | Loads the plugin in fooyin's sandbox against the Flatpak's libraries. |
+| `tools/catalog-check.cpp` | Runs the panel's API calls in fooyin's sandbox and prints the results. |
 | `tools/stream-check.cpp` | Runs the streaming code for one track in fooyin's sandbox, optionally from a position. |
 
 **Seeking:** each DASH media segment (about 4 s) starts at a known time from the manifest's
@@ -61,6 +64,10 @@ being opened, so the device to abort is held in an `std::atomic<std::shared_ptr>
 
 ## What was learned about fooyin (0.14.1)
 
+- `TrackSelectionController::startPlayback(tracks, index)` plays a list from a track in a temporary
+  playback sequence: what the panel's double-click uses. Setting a widget's selection with
+  `changeSelectedTracks(context, …)` and calling `addTrackContextMenu(menu, context)` gives fooyin's
+  whole track menu (queue, add to playlist, …) for free.
 - Plugins are Qt plugins with IID `org.fooyin.fooyin.plugin/2`, implementing any of `Plugin`,
   `CorePlugin`, `GuiPlugin`, `InputPlugin`. The C++ interface isn't stable: rebuild for every fooyin
   version (`scripts/build.sh` notices a new version and rebuilds against it).
@@ -91,8 +98,23 @@ being opened, so the device to abort is held in an `std::atomic<std::shared_ptr>
   Ask only for scopes the developer dashboard offers (`user.read collection.read collection.write
   playlists.read playlists.write search.read playback` work); asking for the legacy `r_usr` got
   login error 1002. The login page is behind bot protection, so it can't be tested with curl.
-- Search is `GET /searchResults?filter[query]=…&include=tracks` (a collection with one result whose
-  relationships list the hits). The older `/searchResults/{query}` returns 400 `INVALID_RESOURCE_ID`.
+- Search is `GET /searchResults?filter[query]=…&include=…` (a collection with one result whose
+  relationships list the hits, 20 of each kind). The older `/searchResults/{query}` (and its
+  `/relationships/…`) return 400 `INVALID_RESOURCE_ID`.
+- **`include` must be one comma-separated parameter**: with repeated `include=` parameters only the
+  first counts. Nested includes work (`tracks.artists,tracks.albums,albums.artists`), so one search
+  request gives tracks with their artists and albums. Relationship linkage on an included resource
+  is there only if a nested include asked for it.
+- Favorites: `/userCollectionTracks|Albums|Artists|Playlists/me/relationships/items` (`me` works;
+  `sort=-addedAt`). Your playlists, including mixes (`playlistType: MIX`), are in
+  `userCollectionPlaylists`. Album tracks: `/albums/{id}/relationships/items` (linkage `meta` has
+  `trackNumber`/`volumeNumber`); playlist tracks: `/playlists/{id}/relationships/items` (works for
+  mixes too); an artist's albums: `/artists/{id}/relationships/albums`. `/artists/{id}/relationships/tracks`
+  returned 400.
+- Lists page by 20, with `links.meta.nextCursor` for `page[cursor]`; a page takes about 0.5 s, so
+  1179 favorite tracks take about 30 s in all. The panel shows each page as it arrives.
+- Durations are ISO 8601 (`PT3M59S`). Album cover art is `coverArt` → `artworks` with `files` of
+  several sizes (up to 1280×1280).
 - `GET /users/me` gives the country (and the account's name and email: don't log it).
 - Playlists, favorites ("userCollection…"), tracks, albums and artists all have v2 endpoints,
   including playlist create/edit/delete and item add/remove/reorder.
@@ -141,9 +163,12 @@ Roughly in this order:
    `session.json` (mode 0600) in the plugin's config folder; the probe's `export-session` is gone.
    The account's country comes from v2 `/users/me`, the playback login's from v1 `/sessions`.
    Open question: whether to keep secrets in KWallet/Secret Service via a portal instead of a file.
-2. **A TIDAL panel** (a widget registered with fooyin's `WidgetProvider`, as Radio Browser does):
-   search (tracks, albums, artists, playlists), your favorites, your playlists; double-click plays
-   in context, the rest of the album or list following.
+2. **A TIDAL panel.** Done (2026-10-28): `TidalBrowser`, a layout widget (Internet > TIDAL) that
+   View > TIDAL also opens in a window. Search (tracks, albums, artists, playlists), favorite
+   tracks/albums/artists, your playlists; albums, playlists and artists open in place with Back;
+   double-click plays the list from that track. Tracks are built from v2 data (artists, album
+   artist, album, date, track/disc numbers in albums, ISRC). Views aren't cached between windows,
+   so favorites load again each time.
 3. **Track details from v2** instead of v1 (artists, album artists, release date, ISRC, ReplayGain
    from `trackManifests`' normalization data if usable), and **cover art** (v2 album `coverArt`).
 4. **Playlists:** open a TIDAL playlist as a fooyin playlist; create, rename, delete; add, remove and

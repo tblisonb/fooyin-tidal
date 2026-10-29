@@ -7,6 +7,8 @@ add_library(
     segmentstreamdevice.h
     tidalapi.cpp
     tidalapi.h
+    tidalcatalog.cpp
+    tidalcatalog.h
     tidallogin.cpp
     tidallogin.h
     tidalsession.cpp
@@ -24,6 +26,8 @@ create_fooyin_plugin(
             Qt6::Widgets
     SOURCES callbackserver.cpp
             callbackserver.h
+            tidalbrowser.cpp
+            tidalbrowser.h
             tidaldecoder.cpp
             tidaldecoder.h
             tidalplugin.cpp

@@ -9,18 +9,25 @@
 
 #pragma once
 
+#include "tidalbrowser.h"
+
 #include <core/engine/inputplugin.h>
 #include <core/plugins/coreplugin.h>
 #include <core/plugins/plugin.h>
 #include <gui/plugins/guiplugin.h>
 
 #include <QObject>
+#include <QPointer>
 
 #include <memory>
 
+class QDialog;
+
 namespace Fooyin {
+class ActionManager;
 class AudioLoader;
 class PlaylistInteractor;
+class TrackSelectionController;
 class SettingsManager;
 } // namespace Fooyin
 
@@ -46,6 +53,8 @@ public:
 
 private:
     void addTrack();
+    void showBrowserWindow();
+    [[nodiscard]] TidalBrowser::Services browserServices() const;
 
     std::weak_ptr<Fooyin::AudioLoader> m_audioLoader;
     Fooyin::SettingsManager* m_settings{nullptr};
@@ -54,5 +63,8 @@ private:
     //! The playback login.
     std::shared_ptr<TidalSession> m_session;
     Fooyin::PlaylistInteractor* m_playlistInteractor{nullptr};
+    Fooyin::ActionManager* m_actionManager{nullptr};
+    Fooyin::TrackSelectionController* m_trackSelection{nullptr};
+    QPointer<QDialog> m_browserWindow;
 };
 } // namespace FooyinTidal

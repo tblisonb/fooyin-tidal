@@ -10,6 +10,7 @@
 #include "tidalplugin.h"
 
 #include "tidalapi.h"
+#include "tidalbrowser.h"
 #include "tidaldecoder.h"
 #include "tidallogin.h"
 #include "tidalsession.h"
@@ -20,6 +21,7 @@
 #include <gui/guiconstants.h>
 #include <gui/playlist/playlistinteractor.h>
 #include <gui/plugins/guiplugincontext.h>
+#include <gui/widgetprovider.h>
 #include <utils/actions/actioncontainer.h>
 #include <utils/actions/actionmanager.h>
 #include <utils/actions/command.h>
@@ -29,11 +31,13 @@
 #include <utils/utils.h>
 
 #include <QAction>
+#include <QDialog>
 #include <QFutureWatcher>
 #include <QInputDialog>
 #include <QLoggingCategory>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QVBoxLayout>
 #include <QtConcurrentRun>
 
 Q_LOGGING_CATEGORY(TIDAL, "fooyin.tidal")
@@ -59,6 +63,8 @@ void TidalPlugin::initialise(const Fooyin::CorePluginContext& context)
 void TidalPlugin::initialise(const Fooyin::GuiPluginContext& context)
 {
     m_playlistInteractor = context.playlistInteractor;
+    m_actionManager      = context.actionManager;
+    m_trackSelection     = context.trackSelection;
 
     auto* addTrackAction = new QAction(tr("Add &TIDAL track…"), this);
     addTrackAction->setStatusTip(tr("Add a TIDAL track to the current playlist by its link or ID"));
@@ -67,7 +73,46 @@ void TidalPlugin::initialise(const Fooyin::GuiPluginContext& context)
     context.actionManager->actionContainer(Fooyin::Constants::Menus::File)->addAction(command);
     QObject::connect(addTrackAction, &QAction::triggered, this, &TidalPlugin::addTrack);
 
+    auto* showBrowserAction = new QAction(tr("&TIDAL"), this);
+    showBrowserAction->setStatusTip(tr("Open the TIDAL window: search, favorites and playlists"));
+    auto* showBrowserCommand = context.actionManager->registerAction(showBrowserAction, "Tidal.ShowBrowser");
+    showBrowserCommand->setCategories({tr("View")});
+    context.actionManager->actionContainer(Fooyin::Constants::Menus::View)->addAction(showBrowserCommand);
+    QObject::connect(showBrowserAction, &QAction::triggered, this, &TidalPlugin::showBrowserWindow);
+
+    context.widgetProvider->registerWidget(
+        u"TidalBrowser"_s, [this]() { return new TidalBrowser(browserServices()); }, tr("TIDAL"));
+    context.widgetProvider->setSubMenus(u"TidalBrowser"_s, {tr("Internet")});
+
     new TidalSettingsPage(m_settings->settingsDialog(), m_account, m_session, this);
+}
+
+TidalBrowser::Services TidalPlugin::browserServices() const
+{
+    return {.account            = m_account,
+            .actionManager      = m_actionManager,
+            .trackSelection     = m_trackSelection,
+            .playlistInteractor = m_playlistInteractor,
+            .settings           = m_settings};
+}
+
+void TidalPlugin::showBrowserWindow()
+{
+    if(m_browserWindow) {
+        m_browserWindow->show();
+        m_browserWindow->raise();
+        m_browserWindow->activateWindow();
+        return;
+    }
+
+    // Also available as a layout widget (Internet > TIDAL), for keeping it in the main window.
+    m_browserWindow = new QDialog(Fooyin::Utils::getMainWindow());
+    m_browserWindow->setAttribute(Qt::WA_DeleteOnClose);
+    m_browserWindow->setWindowTitle(tr("TIDAL"));
+    auto* layout = new QVBoxLayout(m_browserWindow);
+    layout->addWidget(new TidalBrowser(browserServices(), m_browserWindow));
+    m_browserWindow->resize(1000, 650);
+    m_browserWindow->show();
 }
 
 QString TidalPlugin::inputName() const

@@ -8,8 +8,8 @@ This is an independent third-party plugin. It isn't part of fooyin or affiliated
 don't take problems with it to either project.
 
 **Status:** early (phase 1 under way). The plugin plays TIDAL tracks you add by link or ID
-(**File > Add TIDAL track…**), at up to 24-bit FLAC, with seeking, and logs in from fooyin's settings.
-Search, favorites and playlists are next.
+(**File > Add TIDAL track…**), at up to 24-bit FLAC, with seeking, logs in from fooyin's settings,
+and has a TIDAL panel for search, favorites and playlists. Editing playlists and favorites is next.
 
 Design notes, what was learned about fooyin and TIDAL, and the plan ahead are in
 [docs/design.md](docs/design.md).
@@ -83,7 +83,7 @@ scripts/build.sh && scripts/install.sh
 
 Restart fooyin and open **Settings > Integrations > TIDAL**, which has two logins:
 
-- **TIDAL Account**, for search, favorites and playlists (not used yet): the client ID of your
+- **TIDAL Account**, for the TIDAL panel's search, favorites and playlists: the client ID of your
   developer app (see "Running the probe" above for setting one up). **Log In** opens TIDAL's login
   page, which comes back to fooyin by itself.
 - **Playback**: the client ID and secret of one of TIDAL's own apps. **Log In** opens TIDAL's login
@@ -93,9 +93,18 @@ Restart fooyin and open **Settings > Integrations > TIDAL**, which has two login
 The logins are kept in `~/.var/app/org.fooyin.fooyin/config/fooyin/tidal/` (`account.json` and
 `session.json`), readable only by you.
 
-Then use **File > Add TIDAL track…** with a link such as
+Then open **View > TIDAL**, or add the panel to your layout (layout editing: **Internet > TIDAL**).
+Pick favorites or playlists from the list at the top, or type a search and press Enter.
+Double-click a track to play it and the rest of its list after it; double-click an album, playlist or
+artist to open it, and **Back** to return. Right-click tracks for fooyin's usual track menu, or an
+album or playlist to play it, add it to the current playlist, or send it to a new one.
+
+**File > Add TIDAL track…** still adds a single track with a link such as
 `https://tidal.com/browse/track/58990486` or just the number. The track goes to the current
 playlist and plays like any other.
+
+`scripts/catalog-check.sh search <words>` (or `favorite-tracks`, `playlists`, `album <id>`, …) runs
+the panel's calls to the official API inside fooyin's sandbox and prints what the panel would list.
 
 `scripts/stream-check.sh <track ID> [start ms]` runs the plugin's streaming code inside fooyin's
 sandbox without starting fooyin, and checks the result with ffprobe. With a start position it
