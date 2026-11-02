@@ -204,6 +204,16 @@ std::expected<Fooyin::Track, QString> TidalApi::track(const QString& trackId)
     return track;
 }
 
+std::expected<QString, QString> TidalApi::albumCoverId(const QString& trackId)
+{
+    const auto body = getV1(u"tracks/%1"_s.arg(trackId), {});
+    if(!body) {
+        return std::unexpected(body.error());
+    }
+    const QJsonObject album = QJsonDocument::fromJson(*body).object().value("album"_L1).toObject();
+    return album.value("cover"_L1).toString();
+}
+
 std::expected<TidalStream, QString> TidalApi::stream(const QString& trackId, const BlockingHttp::Cancelled& cancelled)
 {
     QUrlQuery query;

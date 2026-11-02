@@ -107,6 +107,11 @@ Lists the panel has fetched are kept in `~/.var/app/org.fooyin.fooyin/cache/fooy
 open straight away next time; TIDAL is then asked (one quick request) whether the list changed, and
 it's fetched again only if it did. The reload button fetches the list again regardless.
 
+TIDAL tracks have their album covers wherever fooyin shows artwork (the cover widget, playlist
+thumbnails, the lyrics background, …): fooyin asks the plugin as it would read a cover embedded in
+a file. Covers are downloaded at 1280×1280 and kept in `cache/fooyin/tidal/covers/`, one per album;
+covers not shown for 60 days are deleted.
+
 **File > Add TIDAL track…** still adds a single track with a link such as
 `https://tidal.com/browse/track/58990486` or just the number. The track goes to the current
 playlist and plays like any other.
@@ -118,6 +123,9 @@ the panel's calls to the official API inside fooyin's sandbox and prints what th
 `scripts/stream-check.sh <track ID> [start ms]` runs the plugin's streaming code inside fooyin's
 sandbox without starting fooyin, and checks the result with ffprobe. With a start position it
 streams from there, as a seek does.
+
+`scripts/cover-check.sh <track ID>` reads a track's details and cover with the plugin's reader, into
+`build/cover-check/`, twice: the second read should come from its cache.
 
 ## Building
 

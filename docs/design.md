@@ -38,6 +38,7 @@ playlist entry tidal://track/<id>
 | `src/tidalbrowser.*` | The TIDAL panel (View > TIDAL, or a layout widget): search, favorites, playlists. |
 | `src/tidalcatalog.*` | Official API calls for the panel, as `TidalItem`s (tracks become fooyin tracks); blocking. |
 | `src/tidalcache.*` | The panel's lists as TIDAL's raw pages, in memory and on disk, with each list's version. |
+| `src/tidalcovers.*` | fooyin's reader for `tidal://` tracks: album covers (v1 cover ID, image cached on disk), track details. |
 | `src/tidalsettingspage.*` | Settings > Integrations > TIDAL: the account and playback logins. |
 | `src/callbackserver.*` | Waits on `localhost:47130` for the browser to come back from the account login. |
 | `src/tidallogin.*` | Both logins' PKCE requests, code exchange, and the country lookup; blocking. |
@@ -49,6 +50,7 @@ playlist entry tidal://track/<id>
 | `tools/tidal-probe.py` | Python probe of both APIs, with its own copy of the logins (`~/.config/fooyin-tidal`). |
 | `tools/plugin-check.cpp` | Loads the plugin in fooyin's sandbox against the Flatpak's libraries. |
 | `tools/catalog-check.cpp` | Runs the panel's API calls in fooyin's sandbox and prints the results. |
+| `tools/cover-check.cpp` | Runs the cover reader for one track in fooyin's sandbox. |
 | `tools/stream-check.cpp` | Runs the streaming code for one track in fooyin's sandbox, optionally from a position. |
 
 **Seeking:** each DASH media segment (about 4 s) starts at a known time from the manifest's
@@ -154,6 +156,9 @@ being opened, so the device to abort is held in an `std::atomic<std::shared_ptr>
   direct URLs (`encryptionType` must be `NONE`); the plugin handles it but hasn't seen one.
 - v1 and v2 use the same track IDs (checked: `58990486` is "Creep" in both, same ISRC).
 - `GET /tracks/{id}` gives title, version, artists, album, track and volume number, duration (s).
+  Its `album.cover` is a UUID; the image is
+  `https://resources.tidal.com/images/<UUID with - as />/1280x1280.jpg` (also 640x640, 320x320, …),
+  public, no login needed.
 
 Track IDs to test with: `58990486` (Radiohead, "Creep", CD quality) and `290136822` (LANNÉ,
 "Dark Side Of The Moon", 24-bit).
@@ -165,6 +170,13 @@ Track IDs to test with: `58990486` (Radiohead, "Creep", CD quality) and `2901368
 - A build-tree RPATH to `.deps/` would make the load check resolve fooyin's libraries from `.deps`
   instead of the Flatpak's; `build.sh` passes `-DCMAKE_SKIP_BUILD_RPATH=ON`.
 - fooyin builds as C++23; the plugin matches it.
+- fooyin gets artwork from a track's file, its folder, or (for http(s) tracks only) an `ARTWORKURL`
+  tag. For a `tidal://` track the way in is an `AudioReader` registered for the `tidal` scheme
+  (`InputCreator::reader`): `AudioLoader::readTrackCover` calls its `readCover` on one of
+  `CoverRepository`'s worker threads, so blocking there is fine. fooyin keeps thumbnails on disk
+  itself but asks again for full-size covers (the lyrics background, the cover widget), hence the
+  plugin's own cache. The same reader's `readTrack` gives details for `tidal://` paths fooyin hasn't
+  read yet (e.g. from a playlist file).
 - fooyin is single-instance: launching it again hands off to the running copy. Quit it fully before
   starting it from a terminal to see `fooyin.tidal` log lines. Started from the desktop, its log goes
   to the journal: `journalctl --user --since -1h | grep -E 'fooyin.tidal|fy.engine'`.
@@ -188,8 +200,10 @@ Roughly in this order:
    tracks were added (the sort is shared by every list and kept in fooyin's settings). Lists are
    cached (`TidalCache`, ~1.8 MB for 1179 tracks) and shown at once, then checked with one request
    (at most once a minute per list) and fetched again in the background only if they changed.
-3. **Track details from v2** instead of v1 (artists, album artists, release date, ISRC, ReplayGain
-   from `trackManifests`' normalization data if usable), and **cover art** (v2 album `coverArt`).
+3. **Cover art.** Done (2026-11-01): `TidalReader` gives fooyin each track's album cover (see the
+   pitfalls below). Not yet: covers in the panel itself.
+   **Track details from v2** instead of v1 for File > Add TIDAL track (artists, album artists,
+   release date, ISRC, ReplayGain from `trackManifests`' normalization data if usable).
 4. **Playlists:** open a TIDAL playlist as a fooyin playlist; create, rename, delete; add, remove and
    reorder tracks; "Add to TIDAL playlist…" and favorite/unfavorite in the context menu.
 5. **Polish:** a quality setting, errors shown in fooyin rather than only the log, a clear message

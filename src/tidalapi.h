@@ -55,6 +55,8 @@ public:
 
     //! The track's details, as a fooyin track that plays through this plugin.
     std::expected<Fooyin::Track, QString> track(const QString& trackId);
+    //! The ID of the track's album cover (a UUID), or an empty string if the album has none.
+    std::expected<QString, QString> albumCoverId(const QString& trackId);
     //! Where to fetch the track's audio. Asks for hi-res; TIDAL gives the best it has up to that.
     std::expected<TidalStream, QString> stream(const QString& trackId, const BlockingHttp::Cancelled& cancelled = {});
 

@@ -11,6 +11,8 @@ add_library(
     tidalcache.h
     tidalcatalog.cpp
     tidalcatalog.h
+    tidalcovers.cpp
+    tidalcovers.h
     tidallogin.cpp
     tidallogin.h
     tidalsession.cpp

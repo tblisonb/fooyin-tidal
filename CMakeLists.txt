@@ -13,7 +13,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Fooyin's development files, built for the installed Flatpak by scripts/build-fooyin.sh.
 find_package(Fooyin REQUIRED)
-find_package(Qt6 REQUIRED COMPONENTS Core Concurrent Network Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Concurrent Gui Network Widgets)
 
 add_subdirectory(src)
 add_subdirectory(tools)

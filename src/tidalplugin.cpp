@@ -12,6 +12,7 @@
 #include "tidalapi.h"
 #include "tidalbrowser.h"
 #include "tidalcache.h"
+#include "tidalcovers.h"
 #include "tidaldecoder.h"
 #include "tidallogin.h"
 #include "tidalsession.h"
@@ -56,7 +57,8 @@ void TidalPlugin::initialise(const Fooyin::CorePluginContext& context)
     m_account         = std::make_shared<TidalSession>(dir + u"/account.json"_s, QString{});
     m_session         = std::make_shared<TidalSession>(dir + u"/session.json"_s, TidalLogin::playbackScopes());
     // In the Flatpak: ~/.var/app/org.fooyin.fooyin/cache/fooyin/tidal.
-    m_cache = std::make_shared<TidalCache>(Fooyin::Utils::cachePath(u"tidal"_s), m_account);
+    m_cache  = std::make_shared<TidalCache>(Fooyin::Utils::cachePath(u"tidal"_s), m_account);
+    m_covers = std::make_shared<TidalCovers>(Fooyin::Utils::cachePath(u"tidal/covers"_s), m_session);
 
     qCInfo(TIDAL) << "TIDAL plugin" << FOOYIN_TIDAL_VERSION << "loaded;"
                   << (m_account->isLoggedIn() ? "account logged in;" : "account not logged in;")
@@ -142,6 +144,10 @@ Fooyin::InputCreator TidalPlugin::inputCreator() const
             return nullptr;
         };
         return std::make_unique<TidalDecoder>(session, createFFmpeg);
+    };
+    // Album covers (and track details) for tidal:// tracks.
+    creator.reader = [session = m_session, covers = m_covers]() {
+        return std::make_unique<TidalReader>(session, covers);
     };
     return creator;
 }
