@@ -34,6 +34,8 @@ create_fooyin_plugin(
             tidalbrowser.h
             tidaldecoder.cpp
             tidaldecoder.h
+            tidaleditor.cpp
+            tidaleditor.h
             tidalplugin.cpp
             tidalplugin.h
             tidalsettingspage.cpp

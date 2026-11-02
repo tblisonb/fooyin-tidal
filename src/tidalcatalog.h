@@ -126,6 +126,13 @@ public:
     //! A new, unlisted playlist; returns its ID.
     std::expected<QString, QString> createPlaylist(const QString& name);
 
+    /*!
+     * The TIDAL track ID for a fooyin track: a tidal:// track's own, else the TIDAL track with the
+     * same ISRC, else one found by searching whose title, artist and length match. Empty when
+     * TIDAL has nothing that matches.
+     */
+    std::expected<QString, QString> findTrack(const Fooyin::Track& track);
+
     //! Any request, for the tools: the JSON:API document TIDAL answered with.
     std::expected<QJsonObject, QString> request(const QByteArray& method, const QString& path, QUrlQuery query,
                                                 const QJsonObject& body = {},

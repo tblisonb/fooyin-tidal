@@ -51,7 +51,7 @@ int main(int argc, char** argv)
     const QCoreApplication app{argc, argv};
     const QStringList args = app.arguments().mid(1);
     if(args.size() < 2) {
-        std::fprintf(stderr, "usage: catalog-check <account.json> search <query> | create-playlist <name> | playlist-add|playlist-remove <playlist> <track>... | favorite|unfavorite <kind> <id>... | raw <METHOD> <path> [json] | <list> [id] [--all | --version | --cache <dir>]\n");
+        std::fprintf(stderr, "usage: catalog-check <account.json> search <query> | create-playlist <name> | playlist-add|playlist-remove <playlist> <track>... | favorite|unfavorite <kind> <id>... | find <title> <artist> <album> <ms> [isrc] | raw <METHOD> <path> [json] | <list> [id] [--all | --version | --cache <dir>]\n");
         return 2;
     }
 
@@ -125,6 +125,25 @@ int main(int argc, char** argv)
             return 2;
         }
         return done(catalog.setFavorite(kind->second, args.mid(3), args.at(1) == "favorite"_L1));
+    }
+
+    if(args.at(1) == "find"_L1 && args.size() >= 6) {
+        // find <title> <artist> <album> <length ms> [ISRC]: the TIDAL track a local track matches.
+        Fooyin::Track track{u"/music/local.flac"_s};
+        track.setTitle(args.at(2));
+        track.setArtists({args.at(3)});
+        track.setAlbum(args.at(4));
+        track.setDuration(args.at(5).toULongLong());
+        if(args.size() > 6) {
+            track.replaceExtraTag(u"ISRC"_s, args.at(6));
+        }
+        const auto id = catalog.findTrack(track);
+        if(!id) {
+            std::fprintf(stderr, "FAIL: %s\n", qPrintable(id.error()));
+            return 1;
+        }
+        std::printf("%s\n", id->isEmpty() ? "no match" : qPrintable(*id));
+        return 0;
     }
 
     if(args.at(1) == "raw"_L1 && args.size() >= 4) {

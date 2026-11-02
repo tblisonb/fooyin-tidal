@@ -14,15 +14,18 @@
 #include "tidalcache.h"
 #include "tidalcovers.h"
 #include "tidaldecoder.h"
+#include "tidaleditor.h"
 #include "tidallogin.h"
 #include "tidalsession.h"
 #include "tidalsettingspage.h"
 
 #include <core/engine/audioloader.h>
+#include <core/player/playercontroller.h>
 #include <core/plugins/coreplugincontext.h>
 #include <gui/guiconstants.h>
 #include <gui/playlist/playlistinteractor.h>
 #include <gui/plugins/guiplugincontext.h>
+#include <gui/trackselectioncontroller.h>
 #include <gui/widgetprovider.h>
 #include <utils/actions/actioncontainer.h>
 #include <utils/actions/actionmanager.h>
@@ -38,6 +41,7 @@
 #include <QInputDialog>
 #include <QLoggingCategory>
 #include <QMainWindow>
+#include <QMenu>
 #include <QMessageBox>
 #include <QVBoxLayout>
 #include <QtConcurrentRun>
@@ -51,6 +55,7 @@ void TidalPlugin::initialise(const Fooyin::CorePluginContext& context)
 {
     m_audioLoader = context.audioLoader;
     m_settings    = context.settingsManager;
+    m_playerController = context.playerController;
 
     // In the Flatpak this is ~/.var/app/org.fooyin.fooyin/config/fooyin/tidal.
     const QString dir = Fooyin::Utils::configPath(u"tidal"_s);
@@ -59,6 +64,7 @@ void TidalPlugin::initialise(const Fooyin::CorePluginContext& context)
     // In the Flatpak: ~/.var/app/org.fooyin.fooyin/cache/fooyin/tidal.
     m_cache  = std::make_shared<TidalCache>(Fooyin::Utils::cachePath(u"tidal"_s), m_account);
     m_covers = std::make_shared<TidalCovers>(Fooyin::Utils::cachePath(u"tidal/covers"_s), m_session);
+    m_editor = new TidalEditor(m_account, m_cache, this);
 
     qCInfo(TIDAL) << "TIDAL plugin" << FOOYIN_TIDAL_VERSION << "loaded;"
                   << (m_account->isLoggedIn() ? "account logged in;" : "account not logged in;")
@@ -89,7 +95,77 @@ void TidalPlugin::initialise(const Fooyin::GuiPluginContext& context)
         u"TidalBrowser"_s, [this]() { return new TidalBrowser(browserServices()); }, tr("TIDAL"));
     context.widgetProvider->setSubMenus(u"TidalBrowser"_s, {tr("Internet")});
 
+    setupEditMenus(context);
+
     new TidalSettingsPage(m_settings->settingsDialog(), m_account, m_session, this);
+}
+
+void TidalPlugin::setupEditMenus(const Fooyin::GuiPluginContext& context)
+{
+    // fooyin's track menu (playlists, library, the TIDAL panel…): Add to TIDAL Playlist and the
+    // favorites, for TIDAL tracks and for others TIDAL has too. Before Tagging, else at the end.
+    const auto renderer = [this](QMenu* menu, const Fooyin::TrackSelection& selection) {
+        m_editor->addTrackActions(menu, selection.tracks);
+    };
+    const Fooyin::Id root{Fooyin::Constants::Menus::Context::TrackSelection};
+    const Fooyin::Id before{Fooyin::Constants::Menus::Context::Tagging};
+    auto* tracks = context.trackSelection;
+    if(!tracks->registerTrackContextAction(this, Fooyin::TrackContextMenuArea::Track, root, "Tidal.TrackActions",
+                                           tr("TIDAL playlists and favorites"), renderer, before)) {
+        tracks->registerTrackContextAction(this, Fooyin::TrackContextMenuArea::Track, root, "Tidal.TrackActions",
+                                           tr("TIDAL playlists and favorites"), renderer);
+    }
+    else {
+        tracks->registerTrackContextSeparator(this, Fooyin::TrackContextMenuArea::Track, root,
+                                              "Tidal.TrackActionsSeparator", before);
+    }
+
+    // Playback menu: the same for the track that's playing.
+    auto* playback = context.actionManager->actionContainer(Fooyin::Constants::Menus::Playback);
+    playback->addSeparator();
+
+    auto* playlistMenu = context.actionManager->createMenu("Tidal.Menu.AddPlayingToPlaylist");
+    playlistMenu->menu()->setTitle(tr("Add Playing Track to TIDAL Pla&ylist"));
+    // Filled when it opens, so it's never empty to fooyin.
+    playlistMenu->setDisabledBehavior(Fooyin::ActionContainer::Show);
+    playback->addMenu(playlistMenu);
+    QObject::connect(playlistMenu->menu(), &QMenu::aboutToShow, this, [this, menu = playlistMenu->menu()]() {
+        menu->clear();
+        const Fooyin::TrackList playing = playingTrack();
+        if(!m_editor->isLoggedIn()) {
+            menu->addAction(tr("Not logged in to your TIDAL account"))->setEnabled(false);
+        }
+        else if(playing.empty()) {
+            menu->addAction(tr("Nothing is playing"))->setEnabled(false);
+        }
+        else {
+            m_editor->addPlaylistEntries(menu, playing);
+        }
+    });
+
+    auto* favoriteAction = new QAction(tr("Add Playing Track to TIDAL &Favorites"), this);
+    favoriteAction->setStatusTip(tr("Add the track that's playing to your TIDAL favorites"));
+    auto* favoriteCommand = context.actionManager->registerAction(favoriteAction, "Tidal.FavoritePlaying");
+    favoriteCommand->setCategories({tr("Playback"), tr("TIDAL")});
+    playback->addAction(favoriteCommand);
+    QObject::connect(favoriteAction, &QAction::triggered, this, [this]() {
+        const Fooyin::TrackList playing = playingTrack();
+        if(!playing.empty() && m_editor->isLoggedIn()) {
+            m_editor->addFavorite(playing);
+        }
+    });
+    QObject::connect(playback->menu(), &QMenu::aboutToShow, favoriteAction, [this, favoriteAction]() {
+        favoriteAction->setEnabled(m_editor->isLoggedIn() && !playingTrack().empty());
+    });
+}
+
+Fooyin::TrackList TidalPlugin::playingTrack() const
+{
+    const Fooyin::Track track = m_playerController ? m_playerController->currentTrack() : Fooyin::Track{};
+    if(!track.isValid()) {
+        return {};
+    }
+    return {track};
 }
 
 TidalBrowser::Services TidalPlugin::browserServices() const
@@ -99,7 +175,8 @@ TidalBrowser::Services TidalPlugin::browserServices() const
             .trackSelection     = m_trackSelection,
             .playlistInteractor = m_playlistInteractor,
             .settings           = m_settings,
-            .cache              = m_cache};
+            .cache              = m_cache,
+            .editor             = m_editor};
 }
 
 void TidalPlugin::showBrowserWindow()

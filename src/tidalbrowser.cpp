@@ -25,7 +25,6 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QFutureWatcher>
-#include <QInputDialog>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -154,46 +153,10 @@ QTreeWidgetItem* rowFor(const FooyinTidal::TidalItem& item, qsizetype index, qsi
     return row;
 }
 
-//! The favorites list items of this kind are kept in.
-FooyinTidal::TidalCatalog::List favoritesList(FooyinTidal::TidalItem::Kind kind)
-{
-    switch(kind) {
-        case FooyinTidal::TidalItem::Kind::Album:
-            return FooyinTidal::TidalCatalog::List::FavoriteAlbums;
-        case FooyinTidal::TidalItem::Kind::Artist:
-            return FooyinTidal::TidalCatalog::List::FavoriteArtists;
-        case FooyinTidal::TidalItem::Kind::Playlist:
-            return FooyinTidal::TidalCatalog::List::Playlists;
-        case FooyinTidal::TidalItem::Kind::Track:
-            break;
-    }
-    return FooyinTidal::TidalCatalog::List::FavoriteTracks;
-}
-
 //! How an item is named in a list's entry: its playlist entry ID when it has one, else its ID.
 QString entryKey(const FooyinTidal::TidalItem& item)
 {
     return item.playlistItemId.isEmpty() ? item.id : item.playlistItemId;
-}
-
-//! “Title” for one item, "3 tracks" for more.
-QString describe(const QList<FooyinTidal::TidalItem>& items)
-{
-    if(items.size() == 1) {
-        return u"“%1”"_s.arg(items.front().title);
-    }
-    const bool tracks = std::ranges::all_of(
-        items, [](const FooyinTidal::TidalItem& item) { return item.kind == FooyinTidal::TidalItem::Kind::Track; });
-    return tracks ? QCoreApplication::translate("FooyinTidal::TidalBrowser", "%n track(s)", nullptr,
-                                                static_cast<int>(items.size()))
-                  : QCoreApplication::translate("FooyinTidal::TidalBrowser", "%n item(s)", nullptr,
-                                                static_cast<int>(items.size()));
-}
-
-//! A playlist name as a menu entry, where & would mark a shortcut.
-QString menuText(QString text)
-{
-    return text.replace(u'&', u"&&"_s);
 }
 
 //! What a background check of a cached list found.
@@ -333,6 +296,11 @@ TidalBrowser::TidalBrowser(Services services, QWidget* parent)
     QObject::connect(m_tree, &QTreeWidget::customContextMenuRequested, this, &TidalBrowser::showContextMenu);
     QObject::connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &TidalBrowser::updateSelection);
     QObject::connect(m_header, &QHeaderView::sortIndicatorChanged, this, &TidalBrowser::saveSort);
+    QObject::connect(m_services.editor, &TidalEditor::notice, this, [this](const QString& message) {
+        m_notice = message;
+        updateStatus();
+    });
+    QObject::connect(m_services.editor, &TidalEditor::changed, this, &TidalBrowser::catchUp);
     QObject::connect(m_header, &QWidget::customContextMenuRequested, this, &TidalBrowser::showHeaderMenu);
     QObject::connect(m_status, &QLabel::linkActivated, this, [this]() {
         m_services.settings->settingsDialog()->openAtPage(SettingsPageId);
@@ -483,7 +451,7 @@ void TidalBrowser::open(const TidalItem& item)
             break;
         case TidalItem::Kind::Playlist:
             view.list        = TidalCatalog::List::PlaylistTracks;
-            view.ownPlaylist = isOwnPlaylist(item);
+            view.ownPlaylist = m_services.editor->isOwnPlaylist(item);
             break;
         case TidalItem::Kind::Artist:
             view.list = TidalCatalog::List::ArtistAlbums;
@@ -983,172 +951,34 @@ void TidalBrowser::send(const QList<TidalItem>& items, const QString& title, Sen
             break;
     }
 }
-QList<TidalItem> TidalBrowser::selectedItems() const
-{
-    QList<TidalItem> items;
-    for(QTreeWidgetItem* treeItem : m_tree->selectedItems()) {
-        if(const TidalItem* item = itemAt(treeItem)) {
-            items.push_back(*item);
-        }
-    }
-    return items;
-}
-
 void TidalBrowser::addEditActions(QMenu* menu, const QList<TidalItem>& items)
 {
-    if(items.isEmpty() || !m_services.account->isLoggedIn()) {
+    if(items.isEmpty() || !m_services.editor->isLoggedIn()) {
         return;
     }
-    menu->addSeparator();
 
+    // Tracks get Add to TIDAL Playlist and the favorites from fooyin's track menu.
     if(items.front().kind == TidalItem::Kind::Track) {
-        addToPlaylistMenu(menu, items);
         if(const View& view = current(); !view.isSearch && view.list == TidalCatalog::List::PlaylistTracks
                                           && view.ownPlaylist && view.loaded) {
-            menu->addAction(tr("&Remove from This TIDAL Playlist"), this,
-                            [this, items]() { removeFromCurrentPlaylist(items); });
+            menu->addSeparator();
+            menu->addAction(tr("&Remove from This TIDAL Playlist"), this, [this, items]() {
+                const View& shown = current();
+                m_services.editor->removeFromPlaylist(shown.id, shown.title, items);
+            });
         }
+        return;
     }
     // Your own playlists are always in your list; following one is for other people's.
-    if(items.front().kind != TidalItem::Kind::Playlist || !isOwnPlaylist(items.front())) {
-        addFavoriteActions(menu, items);
+    if(items.front().kind != TidalItem::Kind::Playlist || !m_services.editor->isOwnPlaylist(items.front())) {
+        menu->addSeparator();
+        m_services.editor->addFavoriteActions(menu, items);
     }
 }
 
-void TidalBrowser::addToPlaylistMenu(QMenu* menu, const QList<TidalItem>& tracks)
+void TidalBrowser::catchUp(const QList<TidalEditor::Changed>& changed)
 {
-    auto* playlists = menu->addMenu(tr("Add to TIDAL Pla&ylist"));
-    playlists->addAction(tr("&New Playlist…"), this, [this, tracks]() { addToNewPlaylist(tracks); });
-
-    const QList<TidalItem> own = ownPlaylists();
-    playlists->addSeparator();
-    if(own.isEmpty()) {
-        auto* none = playlists->addAction(m_prefetching.contains(TidalCatalog::List::Playlists)
-                                              ? tr("Loading your playlists…")
-                                              : tr("No playlists of your own yet"));
-        none->setEnabled(false);
-        return;
-    }
-
-    QStringList ids;
-    for(const TidalItem& track : tracks) {
-        ids.append(track.id);
-    }
-    // Most recently changed first, as TIDAL lists them.
-    for(const TidalItem& playlist : own) {
-        playlists->addAction(menuText(playlist.title), this, [this, ids, playlist, tracks]() {
-            edit([id = playlist.id, ids](TidalCatalog& catalog) { return catalog.addToPlaylist(id, ids); },
-                 tr("Added %1 to %2").arg(describe(tracks), playlist.title),
-                 tr("Couldn't add to %1").arg(playlist.title),
-                 {{TidalCatalog::List::PlaylistTracks, playlist.id, {}}, {TidalCatalog::List::Playlists, {}, {}}});
-        });
-    }
-}
-
-void TidalBrowser::addFavoriteActions(QMenu* menu, const QList<TidalItem>& items)
-{
-    const TidalItem::Kind kind = items.front().kind;
-    if(!std::ranges::all_of(items, [kind](const TidalItem& item) { return item.kind == kind; })) {
-        return;
-    }
-
-    QStringList ids;
-    for(const TidalItem& item : items) {
-        ids.append(item.id);
-    }
-    const TidalCatalog::List list = favoritesList(kind);
-    // When the favorites list isn't cached yet, both are offered.
-    const std::optional<bool> allFavorites = allFavorite(items, true);
-    const std::optional<bool> noFavorites  = allFavorite(items, false);
-    const QString what                      = describe(items);
-
-    if(!allFavorites.value_or(false)) {
-        menu->addAction(tr("Add to TIDAL &Favorites"), this, [this, kind, ids, list, what]() {
-            edit([kind, ids](TidalCatalog& catalog) { return catalog.setFavorite(kind, ids, true); },
-                 tr("Added %1 to your TIDAL favorites").arg(what), tr("Couldn't add %1 to your favorites").arg(what),
-                 {{list, {}, {}}});
-        });
-    }
-    if(!noFavorites.value_or(false)) {
-        menu->addAction(tr("Remove from TIDAL F&avorites"), this, [this, kind, ids, list, what]() {
-            edit([kind, ids](TidalCatalog& catalog) { return catalog.setFavorite(kind, ids, false); },
-                 tr("Removed %1 from your TIDAL favorites").arg(what),
-                 tr("Couldn't remove %1 from your favorites").arg(what), {{list, {}, ids}});
-        });
-    }
-}
-
-void TidalBrowser::addToNewPlaylist(const QList<TidalItem>& tracks)
-{
-    bool ok{false};
-    const QString name
-        = QInputDialog::getText(this, tr("New TIDAL Playlist"), tr("Name:"), QLineEdit::Normal, {}, &ok).trimmed();
-    if(!ok || name.isEmpty()) {
-        return;
-    }
-    QStringList ids;
-    for(const TidalItem& track : tracks) {
-        ids.append(track.id);
-    }
-    edit(
-        [name, ids](TidalCatalog& catalog) -> std::expected<void, QString> {
-            const auto id = catalog.createPlaylist(name);
-            if(!id) {
-                return std::unexpected(id.error());
-            }
-            return catalog.addToPlaylist(*id, ids);
-        },
-        tr("Made the TIDAL playlist %1 with %2").arg(name, describe(tracks)),
-        tr("Couldn't make the TIDAL playlist %1").arg(name), {{TidalCatalog::List::Playlists, {}, {}}});
-}
-
-void TidalBrowser::removeFromCurrentPlaylist(const QList<TidalItem>& entries)
-{
-    const View& view = current();
-    QStringList keys;
-    for(const TidalItem& entry : entries) {
-        keys.append(entry.playlistItemId);
-    }
-    const QString playlist = view.title;
-    edit([id = view.id, entries](TidalCatalog& catalog) { return catalog.removeFromPlaylist(id, entries); },
-         tr("Removed %1 from %2").arg(describe(entries), playlist), tr("Couldn't remove from %1").arg(playlist),
-         {{TidalCatalog::List::PlaylistTracks, view.id, keys}, {TidalCatalog::List::Playlists, {}, {}}});
-}
-
-void TidalBrowser::edit(const Edit& change, const QString& done, const QString& failed,
-                        const QList<Changed>& changed)
-{
-    m_notice = tr("Saving to TIDAL…");
-    updateStatus();
-
-    using Result  = std::expected<void, QString>;
-    auto* watcher = new QFutureWatcher<Result>(this);
-    QObject::connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, done, failed, changed]() {
-        const Result result = watcher->result();
-        watcher->deleteLater();
-        if(!result) {
-            qCWarning(TIDAL) << "TIDAL panel:" << failed << "-" << result.error();
-            m_notice = u"%1: %2"_s.arg(failed, result.error());
-        }
-        else {
-            m_notice = done;
-            catchUp(changed);
-        }
-        updateStatus();
-    });
-    watcher->setFuture(QtConcurrent::run([account = m_services.account, change]() {
-        TidalCatalog catalog{account};
-        return change(catalog);
-    }));
-}
-
-void TidalBrowser::catchUp(const QList<Changed>& changed)
-{
-    for(const Changed& list : changed) {
-        // Checked with TIDAL the next time it's shown.
-        if(TidalCache::Entry* entry = m_services.cache->find(list.list, list.id)) {
-            entry->checked = {};
-        }
+    for(const TidalEditor::Changed& list : changed) {
         for(size_t i{0}; i < m_views.size(); ++i) {
             View& view = m_views.at(i);
             if(view.isSearch || view.list != list.list || view.id != list.id || !view.loaded) {
@@ -1168,80 +998,15 @@ void TidalBrowser::catchUp(const QList<Changed>& changed)
     }
 }
 
-void TidalBrowser::prefetch(TidalCatalog::List list)
+QList<TidalItem> TidalBrowser::selectedItems() const
 {
-    if(!m_services.account->isLoggedIn() || m_prefetching.contains(list)) {
-        return;
-    }
-    m_prefetching.append(list);
-
-    using Result  = std::expected<Sync, QString>;
-    auto* watcher = new QFutureWatcher<Result>(this);
-    QObject::connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, list]() {
-        const Result result = watcher->result();
-        watcher->deleteLater();
-        m_prefetching.removeAll(list);
-        if(!result) {
-            qCInfo(TIDAL) << "TIDAL panel: couldn't fetch a list for the menus:" << result.error();
-            return;
-        }
-        m_services.cache->store(list, {}, result->version, result->pages);
-    });
-    watcher->setFuture(QtConcurrent::run([account = m_services.account, list, cancelled = cancelled()]() {
-        return sync(account, list, {}, std::nullopt, cancelled);
-    }));
-}
-
-QList<TidalItem> TidalBrowser::ownPlaylists()
-{
-    const TidalCache::Entry* entry = m_services.cache->find(TidalCatalog::List::Playlists, {});
-    // Listed before the panel asked TIDAL for playlists' owners: fetched again.
-    if(entry && !entry->items.isEmpty()
-       && std::ranges::none_of(entry->items, [](const TidalItem& item) { return !item.owners.isEmpty(); })) {
-        m_services.cache->remove(TidalCatalog::List::Playlists, {});
-        entry = nullptr;
-    }
-    if(!entry) {
-        prefetch(TidalCatalog::List::Playlists);
-        return {};
-    }
-    QList<TidalItem> own;
-    const QString me = m_services.account->userId();
-    for(const TidalItem& playlist : entry->items) {
-        if(!me.isEmpty() && playlist.owners.contains(me)) {
-            own.push_back(playlist);
+    QList<TidalItem> items;
+    for(QTreeWidgetItem* treeItem : m_tree->selectedItems()) {
+        if(const TidalItem* item = itemAt(treeItem)) {
+            items.push_back(*item);
         }
     }
-    return own;
-}
-
-bool TidalBrowser::isOwnPlaylist(const TidalItem& playlist)
-{
-    const QString me = m_services.account->userId();
-    if(me.isEmpty() || playlist.kind != TidalItem::Kind::Playlist) {
-        return false;
-    }
-    if(!playlist.owners.isEmpty()) {
-        return playlist.owners.contains(me);
-    }
-    // Search results don't say who owns a playlist; your playlists list does.
-    return std::ranges::any_of(ownPlaylists(), [&playlist](const TidalItem& own) { return own.id == playlist.id; });
-}
-
-std::optional<bool> TidalBrowser::allFavorite(const QList<TidalItem>& items, bool favorite)
-{
-    const TidalCatalog::List list  = favoritesList(items.front().kind);
-    const TidalCache::Entry* entry = m_services.cache->find(list, {});
-    if(!entry) {
-        prefetch(list);
-        return std::nullopt;
-    }
-    QSet<QString> favorites;
-    for(const TidalItem& item : entry->items) {
-        favorites.insert(item.id);
-    }
-    return std::ranges::all_of(items,
-                               [&favorites, favorite](const TidalItem& item) { return favorites.contains(item.id) == favorite; });
+    return items;
 }
 } // namespace FooyinTidal
 

@@ -10,6 +10,7 @@
 #pragma once
 
 #include "tidalcatalog.h"
+#include "tidaleditor.h"
 
 #include <gui/fywidget.h>
 
@@ -60,6 +61,7 @@ public:
         Fooyin::PlaylistInteractor* playlistInteractor{nullptr};
         Fooyin::SettingsManager* settings{nullptr};
         std::shared_ptr<TidalCache> cache;
+        TidalEditor* editor{nullptr};
     };
 
     explicit TidalBrowser(Services services, QWidget* parent = nullptr);
@@ -101,17 +103,6 @@ private:
         bool ownPlaylist{false};
     };
 
-    //! A list an edit changes, so the panel and the cache catch up with TIDAL.
-    struct Changed
-    {
-        TidalCatalog::List list;
-        QString id;
-        //! Taken out of the list at once, before TIDAL is asked for it again: its items' IDs, or
-        //! for a playlist, its entries' IDs.
-        QStringList removed;
-    };
-    using Edit = std::function<std::expected<void, QString>(TidalCatalog& catalog)>;
-
     enum class SendAction : uint8_t
     {
         Play,
@@ -142,20 +133,9 @@ private:
     void sendAll(const TidalItem& item, SendAction action);
 
     void addEditActions(QMenu* menu, const QList<TidalItem>& items);
-    void addToPlaylistMenu(QMenu* menu, const QList<TidalItem>& tracks);
-    void addFavoriteActions(QMenu* menu, const QList<TidalItem>& items);
-    void addToNewPlaylist(const QList<TidalItem>& tracks);
-    void removeFromCurrentPlaylist(const QList<TidalItem>& entries);
-    //! Runs an edit in the background, then says how it went and brings `changed` up to date.
-    void edit(const Edit& change, const QString& done, const QString& failed, const QList<Changed>& changed);
-    void catchUp(const QList<Changed>& changed);
-    //! Fetches a list into the cache in the background if it isn't there (for the menus).
-    void prefetch(TidalCatalog::List list);
+    //! After an edit: takes out what it removed, and checks the lists it changed with TIDAL.
+    void catchUp(const QList<TidalEditor::Changed>& changed);
     [[nodiscard]] QList<TidalItem> selectedItems() const;
-    [[nodiscard]] QList<TidalItem> ownPlaylists();
-    [[nodiscard]] bool isOwnPlaylist(const TidalItem& playlist);
-    //! Whether each item is a favorite: nothing when that favorites list isn't cached.
-    [[nodiscard]] std::optional<bool> allFavorite(const QList<TidalItem>& items, bool favorite);
     void send(const QList<TidalItem>& items, const QString& title, SendAction action);
     void applySort();
     void saveSort(int column, Qt::SortOrder order);
@@ -179,8 +159,6 @@ private:
     bool m_shown{false};
     //! The last edit's outcome, shown in the status line until the panel moves on.
     QString m_notice;
-    //! Lists being fetched by `prefetch`.
-    QList<TidalCatalog::List> m_prefetching;
     int m_sortColumn;
     Qt::SortOrder m_sortOrder;
     bool m_applyingSort{false};

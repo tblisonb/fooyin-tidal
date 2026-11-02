@@ -26,6 +26,7 @@ class QDialog;
 namespace Fooyin {
 class ActionManager;
 class AudioLoader;
+class PlayerController;
 class PlaylistInteractor;
 class TrackSelectionController;
 class SettingsManager;
@@ -34,6 +35,7 @@ class SettingsManager;
 namespace FooyinTidal {
 class TidalCache;
 class TidalCovers;
+class TidalEditor;
 class TidalSession;
 
 class TidalPlugin : public QObject,
@@ -56,6 +58,9 @@ public:
 private:
     void addTrack();
     void showBrowserWindow();
+    //! TIDAL's entries in fooyin's track menu, and the Playback menu's for the playing track.
+    void setupEditMenus(const Fooyin::GuiPluginContext& context);
+    [[nodiscard]] Fooyin::TrackList playingTrack() const;
     [[nodiscard]] TidalBrowser::Services browserServices() const;
 
     std::weak_ptr<Fooyin::AudioLoader> m_audioLoader;
@@ -68,6 +73,9 @@ private:
     std::shared_ptr<TidalCache> m_cache;
     //! Album covers for fooyin (cache/fooyin/tidal/covers).
     std::shared_ptr<TidalCovers> m_covers;
+    //! Playlist and favorites changes, for the panels and fooyin's menus.
+    TidalEditor* m_editor{nullptr};
+    Fooyin::PlayerController* m_playerController{nullptr};
     Fooyin::PlaylistInteractor* m_playlistInteractor{nullptr};
     Fooyin::ActionManager* m_actionManager{nullptr};
     Fooyin::TrackSelectionController* m_trackSelection{nullptr};

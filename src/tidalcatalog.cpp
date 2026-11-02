@@ -21,6 +21,7 @@
 #include <QThread>
 #include <QUuid>
 
+#include <cstdlib>
 #include <map>
 
 using namespace Qt::StringLiterals;
@@ -263,6 +264,35 @@ QList<TidalItem> itemsFrom(const QJsonArray& links, const Included& included)
     return items;
 }
 
+//! Text as compared when matching tracks: letters and digits only, case folded.
+QString comparable(const QString& text)
+{
+    QString result;
+    for(const QChar c : text.normalized(QString::NormalizationForm_KD)) {
+        if(c.isLetterOrNumber()) {
+            result += c.toCaseFolded();
+        }
+    }
+    return result;
+}
+
+//! Of TIDAL's candidates for a track, the one on the same album if there is one, else the first.
+QString pickTrack(const QList<TidalItem>& candidates, const Fooyin::Track& track)
+{
+    if(candidates.isEmpty()) {
+        return {};
+    }
+    const QString album = comparable(track.album());
+    if(!album.isEmpty()) {
+        for(const TidalItem& candidate : candidates) {
+            if(comparable(candidate.album) == album) {
+                return candidate.id;
+            }
+        }
+    }
+    return candidates.front().id;
+}
+
 QString describeError(const FooyinTidal::HttpResult& result)
 {
     if(result.error.isEmpty()) {
@@ -419,6 +449,57 @@ std::expected<QString, QString> TidalCatalog::createPlaylist(const QString& name
         return std::unexpected(u"TIDAL didn't return the new playlist"_s);
     }
     return id;
+}
+
+std::expected<QString, QString> TidalCatalog::findTrack(const Fooyin::Track& track)
+{
+    if(track.filepath().startsWith(u"tidal://"_s)) {
+        return trackIdFrom(track.filepath());
+    }
+
+    const QString isrc = track.extraTag(u"ISRC"_s).value(0).trimmed();
+    if(!isrc.isEmpty()) {
+        QUrlQuery params;
+        params.addQueryItem(u"filter[isrc]"_s, encoded(isrc));
+        params.addQueryItem(u"include"_s, u"albums,artists"_s);
+        const auto doc = get(u"/tracks"_s, params);
+        if(!doc) {
+            return std::unexpected(doc.error());
+        }
+        const Included included{*doc};
+        QList<TidalItem> candidates;
+        for(const auto& value : doc->value("data"_L1).toArray()) {
+            const QJsonObject resource = value.toObject();
+            // Releases that can't be streamed (here, at least) come back too.
+            if(attributes(resource).value("availability"_L1).toArray().contains(u"STREAM"_s)) {
+                candidates.push_back(trackItem(resource, included));
+            }
+        }
+        if(!candidates.isEmpty()) {
+            return pickTrack(candidates, track);
+        }
+    }
+
+    const QString title  = comparable(track.title());
+    const QString artist = comparable(track.primaryArtist());
+    if(title.isEmpty() || artist.isEmpty()) {
+        return QString{};
+    }
+    const auto results = search(track.primaryArtist() + u" "_s + track.title());
+    if(!results) {
+        return std::unexpected(results.error());
+    }
+    // Strict, so a live version or a cover isn't added in its place.
+    constexpr qint64 LengthToleranceMs = 3000;
+    const auto length                  = static_cast<qint64>(track.duration());
+    QList<TidalItem> candidates;
+    for(const TidalItem& candidate : results->tracks) {
+        if(comparable(candidate.title) == title && comparable(candidate.artist).contains(artist)
+           && (length <= 0 || std::abs(candidate.infoOrder - length) <= LengthToleranceMs)) {
+            candidates.push_back(candidate);
+        }
+    }
+    return pickTrack(candidates, track);
 }
 
 std::expected<TidalSearch, QString> TidalCatalog::search(const QString& query)

@@ -225,8 +225,15 @@ Roughly in this order:
    background. Removed rows go at once, and the lists an edit changes are marked unchecked in the
    cache and checked with TIDAL. A list further back is checked on Back. Not yet: rename, delete,
    reorder; opening a TIDAL playlist as a fooyin playlist.
+   Since then (2026-11-02) the edits live in `TidalEditor`, shared by the panels and fooyin's own
+   menus: a `registerTrackContextAction` entry in fooyin's track menu (before Tagging) adds Add to
+   TIDAL Playlist and the favorites for any tracks, and the Playback menu has both for the playing
+   track (`PlayerController::currentTrack`). Non-TIDAL tracks go through `TidalCatalog::findTrack`:
+   `GET /tracks?filter[isrc]=` (streamable ones only, same album preferred), else `/searchResults`
+   with a strict title/artist/length (±3 s) match. Outcomes go to the panels' status lines and
+   `StatusEvent::post`.
 5. **Polish:** a quality setting, errors shown in fooyin rather than only the log, a clear message
    when v1 playback stops working.
 
-Ideas for later: matching TIDAL tracks to local files by ISRC; caching streams for gapless
+Ideas for later: playing local files' TIDAL matches (or the reverse) by ISRC; caching streams for gapless
 transitions; limiting how far ahead `SegmentStreamDevice` downloads.

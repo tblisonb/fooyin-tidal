@@ -105,15 +105,25 @@ Date are there too), turn auto-sizing off to set widths yourself, or reset them;
 reorder. Each TIDAL panel keeps its own columns, saved with fooyin's layout. Right-click tracks for fooyin's usual track menu, or an album or playlist to play it, add it to
 the current playlist, or send it to a new one.
 
-The right-click menu also edits your TIDAL account:
-- **Tracks:** add the selected tracks to one of your own TIDAL playlists, or to a new one. Inside
-  one of your playlists, **Remove from This TIDAL Playlist** removes the selected entries.
-- **Favorites:** add tracks, albums, artists and other people's playlists to your TIDAL favorites,
-  or remove them.
+Your TIDAL playlists and favorites can be edited from fooyin's track menu, anywhere you right-click
+tracks (playlists, the library, the TIDAL panel, …), and from the **Playback** menu for the track
+that's playing:
+- **Add to TIDAL Playlist:** one of your own TIDAL playlists, or **New Playlist…**. In the Playback
+  menu it's **Add Playing Track to TIDAL Playlist**.
+- **Add to TIDAL Favorites** / **Remove from TIDAL Favorites** (the Playback menu has **Add Playing
+  Track to TIDAL Favorites**, which can be given a shortcut under Settings > Shortcuts).
+- In the panel, albums, artists and other people's playlists can be added to or removed from your
+  favorites too, and inside one of your playlists **Remove from This TIDAL Playlist** removes the
+  selected entries.
 
-Changes are made on TIDAL right away. The status line says how each one went, and the lists it
-changes are checked with TIDAL again. New playlists are unlisted: anyone with the link can see
-them, but they aren't shown on your profile.
+Tracks that aren't TIDAL's (your own files) are looked up on TIDAL first: by ISRC when the file has
+one, else by searching for the artist and title and taking a track with the same title, artist and
+length (within 3 seconds), preferring the same album. Tracks with no such match are left out, and
+the message says which.
+
+Changes are made on TIDAL right away. The panel's status line (and fooyin's status bar, if your
+layout has one) says how each went, and the lists it changes are checked with TIDAL again. New
+playlists are unlisted: anyone with the link can see them, but they aren't shown on your profile.
 
 Lists the panel has fetched are kept in `~/.var/app/org.fooyin.fooyin/cache/fooyin/tidal/`, so they
 open straight away next time; TIDAL is then asked (one quick request) whether the list changed, and
@@ -133,7 +143,8 @@ the panel's calls to the official API inside fooyin's sandbox and prints what th
 `--version` prints what the cache compares, `--cache <dir>` stores a list in a cache and reads it back.
 It makes the panel's edits too, on your account: `create-playlist <name>`, `playlist-add` and
 `playlist-remove <playlist> <track>...`, `favorite` and `unfavorite <track|album|artist|playlist>
-<id>...`; `raw <METHOD> <path> [json]` sends any request.
+<id>...`; `find <title> <artist> <album> <length ms> [ISRC]` shows which TIDAL track a file would
+be matched to; `raw <METHOD> <path> [json]` sends any request.
 
 `scripts/stream-check.sh <track ID> [start ms]` runs the plugin's streaming code inside fooyin's
 sandbox without starting fooyin, and checks the result with ffprobe. With a start position it
