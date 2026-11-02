@@ -201,6 +201,8 @@ std::expected<Fooyin::Track, QString> TidalApi::track(const QString& trackId)
     track.setDuration(static_cast<uint64_t>(json.value("duration"_L1).toInteger()) * 1000);
     track.setCodec(u"FLAC"_s);
     track.setMetadataWasRead(true);
+    // fooyin keys full-size covers (and more) by the hash; without one every TIDAL track shares a key.
+    track.generateHash();
     return track;
 }
 

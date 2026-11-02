@@ -158,6 +158,8 @@ TidalItem trackItem(const QJsonObject& resource, const Included& included)
     track.setDuration(duration);
     track.setCodec(u"FLAC"_s);
     track.setMetadataWasRead(true);
+    // fooyin keys full-size covers (and more) by the hash; without one every TIDAL track shares a key.
+    track.generateHash();
 
     TidalItem item;
     item.kind   = TidalItem::Kind::Track;

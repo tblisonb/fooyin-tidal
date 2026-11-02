@@ -177,6 +177,9 @@ Track IDs to test with: `58990486` (Radiohead, "Creep", CD quality) and `2901368
   itself but asks again for full-size covers (the lyrics background, the cover widget), hence the
   plugin's own cache. The same reader's `readTrack` gives details for `tidal://` paths fooyin hasn't
   read yet (e.g. from a playlist file).
+- fooyin keys full-size covers by `Track::hash()`, which stays empty until something calls
+  `generateHash()` (the setters only refresh a hash that's already there). Tracks the plugin builds
+  must call it, or every TIDAL track not yet reloaded from the database shows the first one's cover.
 - fooyin is single-instance: launching it again hands off to the running copy. Quit it fully before
   starting it from a terminal to see `fooyin.tidal` log lines. Started from the desktop, its log goes
   to the journal: `journalctl --user --since -1h | grep -E 'fooyin.tidal|fy.engine'`.
