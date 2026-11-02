@@ -11,6 +11,7 @@
 
 #include "tidalapi.h"
 #include "tidalbrowser.h"
+#include "tidalcache.h"
 #include "tidaldecoder.h"
 #include "tidallogin.h"
 #include "tidalsession.h"
@@ -54,6 +55,8 @@ void TidalPlugin::initialise(const Fooyin::CorePluginContext& context)
     const QString dir = Fooyin::Utils::configPath(u"tidal"_s);
     m_account         = std::make_shared<TidalSession>(dir + u"/account.json"_s, QString{});
     m_session         = std::make_shared<TidalSession>(dir + u"/session.json"_s, TidalLogin::playbackScopes());
+    // In the Flatpak: ~/.var/app/org.fooyin.fooyin/cache/fooyin/tidal.
+    m_cache = std::make_shared<TidalCache>(Fooyin::Utils::cachePath(u"tidal"_s), m_account);
 
     qCInfo(TIDAL) << "TIDAL plugin" << FOOYIN_TIDAL_VERSION << "loaded;"
                   << (m_account->isLoggedIn() ? "account logged in;" : "account not logged in;")
@@ -93,7 +96,8 @@ TidalBrowser::Services TidalPlugin::browserServices() const
             .actionManager      = m_actionManager,
             .trackSelection     = m_trackSelection,
             .playlistInteractor = m_playlistInteractor,
-            .settings           = m_settings};
+            .settings           = m_settings,
+            .cache              = m_cache};
 }
 
 void TidalPlugin::showBrowserWindow()

@@ -5,12 +5,14 @@
 #   scripts/catalog-check.sh search <query>
 #   scripts/catalog-check.sh favorite-tracks|favorite-albums|favorite-artists|playlists [--all]
 #   scripts/catalog-check.sh album|playlist|artist <id> [--all]
+#   ... --version       # the list's version, which the cache compares
+#   ... --cache <dir>   # store the list in a cache in <dir> and read it back
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 
-[[ $# -ge 1 ]] || { sed -n '5,7s/^# *//p' "$0" >&2; exit 2; }
+[[ $# -ge 1 ]] || { sed -n '5,9s/^# *//p' "$0" >&2; exit 2; }
 [[ -x build/tools/catalog-check ]] || { echo "Build it first: scripts/build.sh" >&2; exit 1; }
 
 account="$HOME/.var/app/org.fooyin.fooyin/config/fooyin/tidal/account.json"

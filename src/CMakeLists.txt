@@ -7,6 +7,8 @@ add_library(
     segmentstreamdevice.h
     tidalapi.cpp
     tidalapi.h
+    tidalcache.cpp
+    tidalcache.h
     tidalcatalog.cpp
     tidalcatalog.h
     tidallogin.cpp

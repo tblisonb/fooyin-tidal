@@ -8,6 +8,7 @@
  * Lists: favorite-tracks, favorite-albums, favorite-artists, playlists, album, playlist, artist.
  */
 
+#include "tidalcache.h"
 #include "tidalcatalog.h"
 #include "tidalsession.h"
 
@@ -28,6 +29,12 @@ void print(const QList<TidalItem>& items)
     for(const TidalItem& item : items) {
         std::printf("  %-12s %s | %s | %s | %s", qPrintable(item.id), qPrintable(item.title), qPrintable(item.artist),
                     qPrintable(item.album), qPrintable(item.info));
+        if(item.added.isValid()) {
+            std::printf(" | added %s", qPrintable(item.added.toString(Qt::ISODate)));
+        }
+        if(item.modified.isValid()) {
+            std::printf(" | modified %s", qPrintable(item.modified.toString(Qt::ISODate)));
+        }
         if(item.kind == TidalItem::Kind::Track && !item.track.trackNumber().isEmpty()) {
             std::printf(" | #%s.%s %s", qPrintable(item.track.discNumber()), qPrintable(item.track.trackNumber()),
                         qPrintable(item.track.date()));
@@ -42,7 +49,7 @@ int main(int argc, char** argv)
     const QCoreApplication app{argc, argv};
     const QStringList args = app.arguments().mid(1);
     if(args.size() < 2) {
-        std::fprintf(stderr, "usage: catalog-check <account.json> search <query> | <list> [id] [--all]\n");
+        std::fprintf(stderr, "usage: catalog-check <account.json> search <query> | <list> [id] [--all | --version | --cache <dir>]\n");
         return 2;
     }
 
@@ -82,7 +89,43 @@ int main(int argc, char** argv)
         return 2;
     }
     const bool all     = args.contains(u"--all"_s);
-    const QString id   = args.size() > 2 && args.at(2) != "--all"_L1 ? args.at(2) : QString{};
+    const QString id   = args.size() > 2 && !args.at(2).startsWith(u"--"_s) ? args.at(2) : QString{};
+
+    if(args.contains(u"--version"_s)) {
+        const auto version = catalog.version(list->second, id);
+        if(!version) {
+            std::fprintf(stderr, "FAIL: %s\n", qPrintable(version.error()));
+            return 1;
+        }
+        std::printf("version: %s\n", version->isEmpty() ? "(none: not checked)" : qPrintable(*version));
+        return 0;
+    }
+
+    if(const qsizetype cacheArg = args.indexOf(u"--cache"_s); cacheArg >= 0 && cacheArg + 1 < args.size()) {
+        // What the panel does: fetch the list and its version, store it, then read it back from
+        // disk as a new session would, and check the version again.
+        const QString dir = args.at(cacheArg + 1);
+        const auto version = catalog.version(list->second, id);
+        const auto pages   = catalog.allDocuments(list->second, id);
+        if(!version || !pages) {
+            std::fprintf(stderr, "FAIL: %s\n", qPrintable(!version ? version.error() : pages.error()));
+            return 1;
+        }
+        const qsizetype stored
+            = TidalCache{dir, account}.store(list->second, id, *version, *pages)->items.size();
+        TidalCache reread{dir, account};
+        const TidalCache::Entry* entry = reread.find(list->second, id);
+        if(!entry) {
+            std::fprintf(stderr, "FAIL: not found in the cache after storing it\n");
+            return 1;
+        }
+        const auto again = catalog.version(list->second, id);
+        std::printf("stored %lld items in %lld pages; read back %lld items; version %s; still current: %s\n",
+                    static_cast<long long>(stored), static_cast<long long>(pages->size()),
+                    static_cast<long long>(entry->items.size()), qPrintable(entry->version),
+                    again && *again == entry->version ? "yes" : "NO");
+        return entry->items.size() == stored && again && *again == entry->version ? 0 : 1;
+    }
 
     if(all) {
         const auto items = catalog.all(list->second, id);

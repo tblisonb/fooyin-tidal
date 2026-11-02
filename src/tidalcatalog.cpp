@@ -14,6 +14,7 @@
 
 #include <utils/stringutils.h>
 
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QRegularExpression>
@@ -107,6 +108,17 @@ QString formatDuration(uint64_t ms)
     return Fooyin::Utils::msToString(ms);
 }
 
+QDateTime dateTime(const QJsonValue& value)
+{
+    return QDateTime::fromString(value.toString(), Qt::ISODateWithMs);
+}
+
+//! When the resource was added to the list it came from (the linkage's meta), if TIDAL says.
+QDateTime addedAt(const QJsonObject& resource)
+{
+    return dateTime(resource.value("linkMeta"_L1).toObject().value("addedAt"_L1));
+}
+
 TidalItem trackItem(const QJsonObject& resource, const Included& included)
 {
     const QJsonObject attrs = attributes(resource);
@@ -152,9 +164,11 @@ TidalItem trackItem(const QJsonObject& resource, const Included& included)
     item.id     = id;
     item.title  = title;
     item.artist = artists.join(u", "_s);
-    item.album  = track.album();
-    item.info   = formatDuration(duration);
-    item.track  = track;
+    item.album     = track.album();
+    item.info      = formatDuration(duration);
+    item.infoOrder = static_cast<qint64>(duration);
+    item.added     = addedAt(resource);
+    item.track     = track;
     return item;
 }
 
@@ -167,10 +181,12 @@ TidalItem albumItem(const QJsonObject& resource, const Included& included)
     item.id     = resource.value("id"_L1).toString();
     item.title  = attrs.value("title"_L1).toString();
     item.artist = names(included.related(resource, u"artists"_s)).join(u", "_s);
+    item.added  = addedAt(resource);
 
     QStringList info;
     if(const QString date = attrs.value("releaseDate"_L1).toString(); !date.isEmpty()) {
         info.push_back(date.left(4));
+        item.infoOrder = date.left(4).toLongLong();
     }
     if(const QString type = attrs.value("type"_L1).toString(); !type.isEmpty() && type != "ALBUM"_L1) {
         info.push_back(type == "EP"_L1 ? type : type.left(1) + type.mid(1).toLower());
@@ -185,6 +201,7 @@ TidalItem artistItem(const QJsonObject& resource)
     item.kind  = TidalItem::Kind::Artist;
     item.id    = resource.value("id"_L1).toString();
     item.title = attributes(resource).value("name"_L1).toString();
+    item.added = addedAt(resource);
     return item;
 }
 
@@ -195,12 +212,15 @@ TidalItem playlistItem(const QJsonObject& resource)
     TidalItem item;
     item.kind  = TidalItem::Kind::Playlist;
     item.id    = resource.value("id"_L1).toString();
-    item.title = attrs.value("name"_L1).toString();
+    item.title    = attrs.value("name"_L1).toString();
+    item.added    = addedAt(resource);
+    item.modified = dateTime(attrs.value("lastModifiedAt"_L1));
 
     const QString type = attrs.value("playlistType"_L1).toString();
     item.artist        = type == "MIX"_L1 ? u"Mix"_s : type == "EDITORIAL"_L1 ? u"TIDAL"_s : QString{};
     if(attrs.contains("numberOfTrackItems"_L1)) {
-        item.info = u"%1 tracks"_s.arg(attrs.value("numberOfTrackItems"_L1).toInt());
+        item.infoOrder = attrs.value("numberOfTrackItems"_L1).toInt();
+        item.info      = u"%1 tracks"_s.arg(item.infoOrder);
     }
     return item;
 }
@@ -317,6 +337,25 @@ std::expected<TidalSearch, QString> TidalCatalog::search(const QString& query)
 std::expected<TidalPage, QString> TidalCatalog::page(List list, const QString& id, const QString& cursor,
                                                      const BlockingHttp::Cancelled& cancelled)
 {
+    const auto doc = pageDocument(list, id, cursor, cancelled);
+    if(!doc) {
+        return std::unexpected(doc.error());
+    }
+    return parsePage(*doc);
+}
+
+TidalPage TidalCatalog::parsePage(const QJsonObject& document)
+{
+    TidalPage result;
+    result.items = itemsFrom(document.value("data"_L1).toArray(), Included{document});
+    result.nextCursor
+        = document.value("links"_L1).toObject().value("meta"_L1).toObject().value("nextCursor"_L1).toString();
+    return result;
+}
+
+std::expected<QJsonObject, QString> TidalCatalog::pageDocument(List list, const QString& id, const QString& cursor,
+                                                               const BlockingHttp::Cancelled& cancelled)
+{
     QString path;
     QString include;
     QString sort;
@@ -366,16 +405,7 @@ std::expected<TidalPage, QString> TidalCatalog::page(List list, const QString& i
         params.addQueryItem(u"page[cursor]"_s, QString::fromUtf8(QUrl::toPercentEncoding(cursor)));
     }
 
-    const auto doc = get(path, params, cancelled);
-    if(!doc) {
-        return std::unexpected(doc.error());
-    }
-
-    TidalPage result;
-    result.items = itemsFrom(doc->value("data"_L1).toArray(), Included{*doc});
-    result.nextCursor
-        = doc->value("links"_L1).toObject().value("meta"_L1).toObject().value("nextCursor"_L1).toString();
-    return result;
+    return get(path, params, cancelled);
 }
 
 std::expected<QList<TidalItem>, QString> TidalCatalog::all(List list, const QString& id,
@@ -392,5 +422,81 @@ std::expected<QList<TidalItem>, QString> TidalCatalog::all(List list, const QStr
         cursor = next->nextCursor;
     } while(!cursor.isEmpty() && !(cancelled && cancelled()));
     return items;
+}
+
+std::expected<QList<QJsonObject>, QString> TidalCatalog::allDocuments(List list, const QString& id,
+                                                                      const BlockingHttp::Cancelled& cancelled)
+{
+    QList<QJsonObject> documents;
+    QString cursor;
+    do {
+        auto next = pageDocument(list, id, cursor, cancelled);
+        if(!next) {
+            return std::unexpected(next.error());
+        }
+        cursor = parsePage(*next).nextCursor;
+        documents.push_back(std::move(*next));
+    } while(!cursor.isEmpty() && !(cancelled && cancelled()));
+    if(cancelled && cancelled()) {
+        return std::unexpected(u"Cancelled"_s);
+    }
+    return documents;
+}
+
+bool TidalCatalog::hasVersion(List list)
+{
+    // Albums don't change, and an artist's albums can't be checked without fetching them.
+    return list != List::AlbumTracks && list != List::ArtistAlbums;
+}
+
+std::expected<QString, QString> TidalCatalog::version(List list, const QString& id,
+                                                      const BlockingHttp::Cancelled& cancelled)
+{
+    QString path;
+    switch(list) {
+        case List::FavoriteTracks:
+            path = u"/userCollectionTracks/me"_s;
+            break;
+        case List::FavoriteAlbums:
+            path = u"/userCollectionAlbums/me"_s;
+            break;
+        case List::FavoriteArtists:
+            path = u"/userCollectionArtists/me"_s;
+            break;
+        case List::Playlists:
+            path = u"/userCollectionPlaylists/me"_s;
+            break;
+        case List::PlaylistTracks:
+            path = u"/playlists/%1"_s.arg(QString::fromUtf8(QUrl::toPercentEncoding(id)));
+            break;
+        case List::AlbumTracks:
+        case List::ArtistAlbums:
+            return QString{};
+    }
+
+    const auto doc = get(path, {}, cancelled);
+    if(!doc) {
+        return std::unexpected(doc.error());
+    }
+    const QJsonObject attrs = attributes(doc->value("data"_L1).toObject());
+    QString version         = u"%1/%2"_s.arg(attrs.value("lastModifiedAt"_L1).toString())
+                          .arg(attrs.value("numberOfItems"_L1).toInteger());
+
+    if(list == List::Playlists) {
+        // The list shows each playlist's track count, and editing a playlist moves it to the top
+        // (newest change first): the first page's changes count too.
+        const auto first = page(list, {}, {}, cancelled);
+        if(!first) {
+            return std::unexpected(first.error());
+        }
+        QCryptographicHash changes{QCryptographicHash::Sha1};
+        for(const TidalItem& item : first->items) {
+            changes.addData(u"%1@%2/%3;"_s.arg(item.id, item.modified.toString(Qt::ISODateWithMs))
+                                .arg(item.infoOrder)
+                                .toUtf8());
+        }
+        version += u";"_s + QString::fromLatin1(changes.result().toHex());
+    }
+    return version;
 }
 } // namespace FooyinTidal

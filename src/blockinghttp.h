@@ -9,10 +9,15 @@
 
 #pragma once
 
-#include <QNetworkAccessManager>
+#include <QNetworkRequest>
 #include <QUrlQuery>
 
 #include <functional>
+#include <memory>
+
+class QNetworkAccessManager;
+class QNetworkReply;
+class QThread;
 
 namespace FooyinTidal {
 struct HttpResult
@@ -31,32 +36,36 @@ struct HttpResult
 };
 
 /*!
- * Synchronous HTTP for fooyin's decoder threads, which have no event loop of their own. Runs a
- * local event loop until the reply finishes. Create and use it on one thread only.
+ * Synchronous HTTP for threads that mustn't run an event loop of their own, such as fooyin's audio
+ * engine thread: a local event loop there would also deliver fooyin's queued engine commands in
+ * the middle of loading a track. Requests run on a network thread that each instance owns, and the
+ * calling thread just waits. Use an instance from one thread at a time.
  */
 class BlockingHttp
 {
 public:
     using Cancelled = std::function<bool()>;
     using Headers   = QList<std::pair<QByteArray, QByteArray>>;
+    //! Called on the network thread with the reply's HTTP status and each chunk of its body.
+    using DataHandler = std::function<void(int status, const QByteArray& chunk)>;
+
+    BlockingHttp();
+    ~BlockingHttp();
+    BlockingHttp(const BlockingHttp&)            = delete;
+    BlockingHttp& operator=(const BlockingHttp&) = delete;
 
     HttpResult get(const QUrl& url, const Headers& headers = {}, const Cancelled& cancelled = {});
     HttpResult postForm(const QUrl& url, const QUrlQuery& form, const Cancelled& cancelled = {});
+    //! A GET whose body goes to `onData` as it arrives instead of into the result.
+    HttpResult getStreamed(const QUrl& url, const DataHandler& onData, const Cancelled& cancelled = {});
 
-    //! Called with the reply's HTTP status and each chunk of its body as it arrives.
-    using DataHandler = std::function<void(int status, const QByteArray& chunk)>;
-
-    //! Runs `reply` to completion. With `onData`, the body goes there instead of into the result.
-    static HttpResult run(QNetworkReply* reply, const Cancelled& cancelled, const DataHandler& onData = {});
+private:
+    using Send = std::function<QNetworkReply*(QNetworkAccessManager&)>;
+    HttpResult run(const Send& send, const Cancelled& cancelled, const DataHandler& onData = {});
 
     static QNetworkRequest request(const QUrl& url, const Headers& headers = {});
 
-    QNetworkAccessManager& network()
-    {
-        return m_network;
-    }
-
-private:
-    QNetworkAccessManager m_network;
+    std::unique_ptr<QThread> m_thread;
+    QNetworkAccessManager* m_network;
 };
 } // namespace FooyinTidal

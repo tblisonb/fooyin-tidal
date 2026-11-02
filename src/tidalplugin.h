@@ -32,6 +32,7 @@ class SettingsManager;
 } // namespace Fooyin
 
 namespace FooyinTidal {
+class TidalCache;
 class TidalSession;
 
 class TidalPlugin : public QObject,
@@ -62,6 +63,8 @@ private:
     std::shared_ptr<TidalSession> m_account;
     //! The playback login.
     std::shared_ptr<TidalSession> m_session;
+    //! What the panels have fetched, shared between them.
+    std::shared_ptr<TidalCache> m_cache;
     Fooyin::PlaylistInteractor* m_playlistInteractor{nullptr};
     Fooyin::ActionManager* m_actionManager{nullptr};
     Fooyin::TrackSelectionController* m_trackSelection{nullptr};

@@ -9,15 +9,31 @@
 
 #include "blockinghttp.h"
 
-#include <QEventLoop>
+#include <QNetworkAccessManager>
 #include <QNetworkReply>
-#include <QTimer>
+#include <QPointer>
+#include <QThread>
+
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 using namespace Qt::StringLiterals;
+using namespace std::chrono_literals;
 
 namespace {
 constexpr int TransferTimeoutMs = 20000;
-constexpr int CancelPollMs      = 100;
+constexpr auto CancelPoll       = 100ms;
+
+//! One request in flight, shared between the waiting thread and the network thread.
+struct Pending
+{
+    std::mutex mutex;
+    std::condition_variable done;
+    bool finished{false};
+    FooyinTidal::HttpResult result;
+    QPointer<QNetworkReply> reply;
+};
 } // namespace
 
 namespace FooyinTidal {
@@ -27,6 +43,23 @@ QString HttpResult::describe() const
         return error;
     }
     return u"HTTP %1: %2"_s.arg(status).arg(QString::fromUtf8(body.left(300)));
+}
+
+BlockingHttp::BlockingHttp()
+    : m_thread{std::make_unique<QThread>()}
+    , m_network{new QNetworkAccessManager}
+{
+    m_thread->setObjectName(u"TIDAL network"_s);
+    m_network->moveToThread(m_thread.get());
+    m_thread->start();
+}
+
+BlockingHttp::~BlockingHttp()
+{
+    // Deleted on its own thread, with any replies still parented to it.
+    QMetaObject::invokeMethod(m_network, [network = m_network]() { delete network; }, Qt::BlockingQueuedConnection);
+    m_thread->quit();
+    m_thread->wait();
 }
 
 QNetworkRequest BlockingHttp::request(const QUrl& url, const Headers& headers)
@@ -42,61 +75,89 @@ QNetworkRequest BlockingHttp::request(const QUrl& url, const Headers& headers)
 
 HttpResult BlockingHttp::get(const QUrl& url, const Headers& headers, const Cancelled& cancelled)
 {
-    return run(m_network.get(request(url, headers)), cancelled);
+    const QNetworkRequest req = request(url, headers);
+    return run([req](QNetworkAccessManager& network) { return network.get(req); }, cancelled);
 }
 
 HttpResult BlockingHttp::postForm(const QUrl& url, const QUrlQuery& form, const Cancelled& cancelled)
 {
     QNetworkRequest req = request(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/x-www-form-urlencoded"_s);
-    return run(m_network.post(req, form.toString(QUrl::FullyEncoded).toUtf8()), cancelled);
+    const QByteArray body = form.toString(QUrl::FullyEncoded).toUtf8();
+    return run([req, body](QNetworkAccessManager& network) { return network.post(req, body); }, cancelled);
 }
 
-HttpResult BlockingHttp::run(QNetworkReply* reply, const Cancelled& cancelled, const DataHandler& onData)
+HttpResult BlockingHttp::getStreamed(const QUrl& url, const DataHandler& onData, const Cancelled& cancelled)
 {
-    const auto status = [reply]() {
-        return reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    };
+    const QNetworkRequest req = request(url);
+    return run([req](QNetworkAccessManager& network) { return network.get(req); }, cancelled, onData);
+}
 
-    QEventLoop loop;
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    if(onData) {
-        QObject::connect(reply, &QNetworkReply::readyRead, &loop,
-                         [reply, &onData, &status]() { onData(status(), reply->readAll()); });
-    }
+HttpResult BlockingHttp::run(const Send& send, const Cancelled& cancelled, const DataHandler& onData)
+{
+    auto pending = std::make_shared<Pending>();
 
-    QTimer cancelPoll;
-    bool wasCancelled{false};
-    if(cancelled) {
-        cancelPoll.setInterval(CancelPollMs);
-        QObject::connect(&cancelPoll, &QTimer::timeout, &loop, [&]() {
-            if(cancelled()) {
-                wasCancelled = true;
-                reply->abort();
+    // `send` and `onData` are used only until `finished` is set, while this thread still waits.
+    QMetaObject::invokeMethod(
+        m_network,
+        [network = m_network, pending, &send, &onData]() {
+            QNetworkReply* reply = send(*network);
+            {
+                const std::scoped_lock lock{pending->mutex};
+                pending->reply = reply;
             }
-        });
-        cancelPoll.start();
+            const auto status = [reply]() {
+                return reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            };
+            if(onData) {
+                QObject::connect(reply, &QNetworkReply::readyRead, reply,
+                                 [reply, &onData, status]() { onData(status(), reply->readAll()); });
+            }
+            QObject::connect(reply, &QNetworkReply::finished, reply, [reply, pending, &onData, status]() {
+                HttpResult result;
+                result.status = status();
+                if(onData) {
+                    onData(result.status, reply->readAll());
+                }
+                else {
+                    result.body = reply->readAll();
+                }
+                if(result.status == 0 && reply->error() != QNetworkReply::NoError) {
+                    result.error = reply->errorString();
+                }
+                reply->deleteLater();
+                {
+                    const std::scoped_lock lock{pending->mutex};
+                    pending->result   = std::move(result);
+                    pending->finished = true;
+                }
+                pending->done.notify_all();
+            });
+        },
+        Qt::QueuedConnection);
+
+    bool wasCancelled{false};
+    std::unique_lock lock{pending->mutex};
+    while(!pending->finished) {
+        pending->done.wait_for(lock, CancelPoll);
+        if(!pending->finished && !wasCancelled && cancelled && cancelled()) {
+            wasCancelled = true;
+            QMetaObject::invokeMethod(
+                m_network,
+                [pending]() {
+                    // Still on the network thread's queue: the reply is set before this runs.
+                    if(QNetworkReply* reply = pending->reply) {
+                        reply->abort();
+                    }
+                },
+                Qt::QueuedConnection);
+        }
     }
 
-    if(!reply->isFinished()) {
-        loop.exec();
-    }
-
-    HttpResult result;
-    result.status = status();
-    if(onData) {
-        onData(result.status, reply->readAll());
-    }
-    else {
-        result.body = reply->readAll();
-    }
+    HttpResult result = std::move(pending->result);
     if(wasCancelled) {
         result.error = u"Cancelled"_s;
     }
-    else if(result.status == 0 && reply->error() != QNetworkReply::NoError) {
-        result.error = reply->errorString();
-    }
-    reply->deleteLater();
     return result;
 }
 } // namespace FooyinTidal

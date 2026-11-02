@@ -14,6 +14,7 @@
 #include <gui/fywidget.h>
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -33,12 +34,14 @@ class WidgetContext;
 } // namespace Fooyin
 
 namespace FooyinTidal {
+class TidalCache;
 class TidalSession;
 
 /*!
  * The TIDAL panel: search, favorites and playlists from the account login. Albums, playlists and
- * artists open in place, with Back to return. Double-clicking a track plays the list it's in from
- * there.
+ * artists open in place, with Back to return. Double-clicking a track plays the list it's in, in
+ * the order shown, from there. Lists come from the cache when they're there, and are checked with
+ * TIDAL in the background.
  */
 class TidalBrowser : public Fooyin::FyWidget
 {
@@ -52,9 +55,11 @@ public:
         Fooyin::TrackSelectionController* trackSelection{nullptr};
         Fooyin::PlaylistInteractor* playlistInteractor{nullptr};
         Fooyin::SettingsManager* settings{nullptr};
+        std::shared_ptr<TidalCache> cache;
     };
 
     explicit TidalBrowser(Services services, QWidget* parent = nullptr);
+    ~TidalBrowser() override;
 
     [[nodiscard]] QString name() const override;
     [[nodiscard]] QString layoutName() const override;
@@ -80,6 +85,12 @@ private:
         QString nextCursor;
         bool loaded{false};
         bool failed{false};
+
+        //! While it's first fetched: the list's version and the pages so far, for the cache.
+        QString version;
+        QList<QJsonObject> pages;
+        //! Being checked with TIDAL, or fetched again, while the cached copy is shown.
+        bool updating{false};
     };
 
     enum class SendAction : uint8_t
@@ -98,6 +109,7 @@ private:
 
     void render();
     void loadMore();
+    void checkForChanges();
     void showError(const QString& error);
     void updateStatus();
 
@@ -107,6 +119,10 @@ private:
     void showContextMenu(const QPoint& pos);
     void updateSelection();
     void sendAll(const TidalItem& item, SendAction action);
+    void send(const QList<TidalItem>& items, const QString& title, SendAction action);
+    void applySort();
+    void saveSort(int column, Qt::SortOrder order);
+    [[nodiscard]] TidalCatalog::Cancelled cancelled() const;
 
     Services m_services;
     Fooyin::WidgetContext* m_context;
@@ -123,5 +139,10 @@ private:
     quint64 m_generation{0};
     bool m_loading{false};
     bool m_shown{false};
+    int m_sortColumn;
+    Qt::SortOrder m_sortOrder;
+    bool m_applyingSort{false};
+    //! Lets background requests stop once the panel is gone.
+    std::shared_ptr<std::atomic_bool> m_alive;
 };
 } // namespace FooyinTidal

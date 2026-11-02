@@ -9,6 +9,7 @@
 
 #include "tidalbrowser.h"
 
+#include "tidalcache.h"
 #include "tidalsession.h"
 #include "tidalsettingspage.h"
 
@@ -27,12 +28,16 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QLoggingCategory>
 #include <QMenu>
+#include <QScrollBar>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtConcurrentRun>
+
+#include <algorithm>
 
 Q_DECLARE_LOGGING_CATEGORY(TIDAL)
 
@@ -40,14 +45,21 @@ using namespace Qt::StringLiterals;
 
 namespace {
 constexpr int ItemIndexRole = Qt::UserRole;
+constexpr int SortRole      = Qt::UserRole + 1;
 constexpr auto SourceKey    = "Source"_L1;
+// The sort is the same in every list and every panel, and kept across restarts.
+constexpr auto SortColumnSetting = "Tidal/BrowserSortColumn";
+constexpr auto SortOrderSetting  = "Tidal/BrowserSortOrder";
 
 enum Column : uint8_t
 {
-    Title = 0,
+    Position = 0,
+    Title,
     Artist,
     Album,
+    Date,
     Details,
+    ColumnCount,
 };
 
 struct Source
@@ -70,16 +82,101 @@ constexpr std::array Sources{
 constexpr int SearchSource  = 0;
 constexpr int DefaultSource = 1;
 
-QTreeWidgetItem* rowFor(const FooyinTidal::TidalItem& item, qsizetype index)
+//! A row that sorts by each column's SortRole when it has one (numbers, dates), else by text.
+class Row : public QTreeWidgetItem
 {
-    auto* row = new QTreeWidgetItem(QStringList{item.title, item.artist, item.album, item.info});
-    row->setData(Title, ItemIndexRole, static_cast<qlonglong>(index));
+public:
+    using QTreeWidgetItem::QTreeWidgetItem;
+
+    bool operator<(const QTreeWidgetItem& other) const override
+    {
+        const int column = treeWidget() ? treeWidget()->sortColumn() : 0;
+        const QVariant mine = data(column, SortRole);
+        const QVariant theirs = other.data(column, SortRole);
+        if(mine.isValid() || theirs.isValid()) {
+            // Rows without a value (no date) come first, in their own order.
+            return mine.toLongLong() < theirs.toLongLong() && theirs.isValid();
+        }
+        return QString::localeAwareCompare(text(column).toCaseFolded(), other.text(column).toCaseFolded()) < 0;
+    }
+};
+
+//! The date shown for an item: when it was added, or for the playlists list, when it last changed.
+QDateTime dateFor(const FooyinTidal::TidalItem& item, bool playlistsList)
+{
+    return playlistsList ? item.modified : item.added;
+}
+
+QTreeWidgetItem* rowFor(const FooyinTidal::TidalItem& item, qsizetype index, qsizetype position, bool playlistsList)
+{
+    const QDateTime date = dateFor(item, playlistsList);
+    const QString dateText
+        = date.isValid() ? QLocale{}.toString(date.toLocalTime().date(), QLocale::ShortFormat) : QString{};
+
+    auto* row = new Row(QStringList{QString::number(position + 1), item.title, item.artist, item.album, dateText,
+                                    item.info});
+    row->setData(Position, ItemIndexRole, static_cast<qlonglong>(index));
+    row->setData(Position, SortRole, static_cast<qlonglong>(position));
+    if(date.isValid()) {
+        row->setData(Date, SortRole, date.toMSecsSinceEpoch());
+        row->setToolTip(Date, QLocale{}.toString(date.toLocalTime(), QLocale::LongFormat));
+    }
+    if(!item.info.isEmpty()) {
+        row->setData(Details, SortRole, item.infoOrder);
+    }
+    row->setTextAlignment(Position, Qt::AlignRight | Qt::AlignVCenter);
     row->setTextAlignment(Details, Qt::AlignRight | Qt::AlignVCenter);
     if(item.kind != FooyinTidal::TidalItem::Kind::Track) {
         row->setToolTip(Title, QCoreApplication::translate("FooyinTidal::TidalBrowser", "Double-click to open"));
     }
     return row;
 }
+
+//! What a background check of a cached list found.
+struct Sync
+{
+    //! The cached copy is still TIDAL's.
+    bool unchanged{false};
+    QString version;
+    QList<QJsonObject> pages;
+};
+
+/*!
+ * Brings a list up to date: with `known` (a cached copy's version), asks TIDAL whether the list
+ * changed and fetches it only if it did; without, fetches it.
+ */
+std::expected<Sync, QString> sync(const std::shared_ptr<FooyinTidal::TidalSession>& account,
+                                  FooyinTidal::TidalCatalog::List list, const QString& id,
+                                  const std::optional<QString>& known,
+                                  const FooyinTidal::TidalCatalog::Cancelled& cancelled)
+{
+    FooyinTidal::TidalCatalog catalog{account};
+    Sync result;
+    if(FooyinTidal::TidalCatalog::hasVersion(list)) {
+        auto version = catalog.version(list, id, cancelled);
+        if(!version) {
+            return std::unexpected(version.error());
+        }
+        result.version = *version;
+        if(known && *known == result.version) {
+            result.unchanged = true;
+            return result;
+        }
+    }
+    auto pages = catalog.allDocuments(list, id, cancelled);
+    if(!pages) {
+        return std::unexpected(pages.error());
+    }
+    result.pages = std::move(*pages);
+    return result;
+}
+
+//! The first page of a list also brings the version it's cached under.
+struct FirstPage
+{
+    QString version;
+    QJsonObject page;
+};
 } // namespace
 
 namespace FooyinTidal {
@@ -98,6 +195,13 @@ TidalBrowser::TidalBrowser(Services services, QWidget* parent)
     , m_title{new QLabel(this)}
     , m_tree{new QTreeWidget(this)}
     , m_status{new QLabel(this)}
+    , m_sortColumn{std::clamp(m_services.settings->fileValue(SortColumnSetting, int{Position}).toInt(), 0,
+                              ColumnCount - 1)}
+    , m_sortOrder{m_services.settings->fileValue(SortOrderSetting, int{Qt::AscendingOrder}).toInt()
+                          == Qt::DescendingOrder
+                      ? Qt::DescendingOrder
+                      : Qt::AscendingOrder}
+    , m_alive{std::make_shared<std::atomic_bool>(true)}
 {
     setObjectName(TidalBrowser::name());
     m_services.actionManager->addContextObject(m_context);
@@ -106,7 +210,7 @@ TidalBrowser::TidalBrowser(Services services, QWidget* parent)
     m_back->setToolTip(tr("Back"));
     m_back->setAutoRaise(true);
     m_refresh->setIcon(QIcon::fromTheme(u"view-refresh"_s));
-    m_refresh->setToolTip(tr("Reload"));
+    m_refresh->setToolTip(tr("Reload from TIDAL"));
     m_refresh->setAutoRaise(true);
 
     for(const Source& source : Sources) {
@@ -121,14 +225,18 @@ TidalBrowser::TidalBrowser(Services services, QWidget* parent)
     m_title->setFont(titleFont);
     m_title->hide();
 
-    m_tree->setHeaderLabels({tr("Title"), tr("Artist"), tr("Album"), tr("Details")});
+    m_tree->setHeaderLabels({u"#"_s, tr("Title"), tr("Artist"), tr("Album"), tr("Added"), tr("Details")});
+    m_tree->headerItem()->setTextAlignment(Position, Qt::AlignRight | Qt::AlignVCenter);
     m_tree->setRootIsDecorated(false);
     m_tree->setUniformRowHeights(true);
     m_tree->setAlternatingRowColors(true);
     m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_tree->header()->setStretchLastSection(false);
+    m_tree->header()->setSectionsClickable(true);
+    m_tree->header()->setSectionResizeMode(Position, QHeaderView::ResizeToContents);
     m_tree->header()->setSectionResizeMode(Title, QHeaderView::Stretch);
+    m_tree->header()->setSectionResizeMode(Date, QHeaderView::ResizeToContents);
     m_tree->header()->setSectionResizeMode(Details, QHeaderView::ResizeToContents);
     m_tree->setColumnWidth(Artist, 200);
     m_tree->setColumnWidth(Album, 200);
@@ -156,9 +264,15 @@ TidalBrowser::TidalBrowser(Services services, QWidget* parent)
     QObject::connect(m_tree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item) { activate(item); });
     QObject::connect(m_tree, &QTreeWidget::customContextMenuRequested, this, &TidalBrowser::showContextMenu);
     QObject::connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &TidalBrowser::updateSelection);
+    QObject::connect(m_tree->header(), &QHeaderView::sortIndicatorChanged, this, &TidalBrowser::saveSort);
     QObject::connect(m_status, &QLabel::linkActivated, this, [this]() {
         m_services.settings->settingsDialog()->openAtPage(SettingsPageId);
     });
+}
+
+TidalBrowser::~TidalBrowser()
+{
+    m_alive->store(false);
 }
 
 QString TidalBrowser::name() const
@@ -192,6 +306,13 @@ void TidalBrowser::showEvent(QShowEvent* event)
         m_shown = true;
         showSource(m_source->currentIndex());
     }
+}
+
+TidalCatalog::Cancelled TidalBrowser::cancelled() const
+{
+    return [alive = m_alive]() {
+        return !alive->load();
+    };
 }
 
 TidalBrowser::View& TidalBrowser::current()
@@ -265,11 +386,17 @@ void TidalBrowser::refresh()
     }
     View view = current();
     m_views.pop_back();
+    if(!view.isSearch) {
+        m_services.cache->remove(view.list, view.id);
+    }
     view.items.clear();
     view.groupSizes = {};
     view.nextCursor.clear();
-    view.loaded = view.isSearch && view.query.isEmpty();
-    view.failed = false;
+    view.pages.clear();
+    view.version.clear();
+    view.loaded   = view.isSearch && view.query.isEmpty();
+    view.failed   = false;
+    view.updating = false;
     enter(std::move(view));
 }
 
@@ -277,18 +404,38 @@ void TidalBrowser::enter(View view)
 {
     ++m_generation;
     m_loading = false;
+
+    bool check{false};
+    if(!view.isSearch && !view.loaded && view.items.isEmpty()) {
+        if(const TidalCache::Entry* entry = m_services.cache->find(view.list, view.id);
+           entry && !TidalCache::expired(view.list, *entry)) {
+            view.items   = entry->items;
+            view.version = entry->version;
+            view.loaded  = true;
+            check        = TidalCache::needsCheck(view.list, *entry);
+        }
+    }
+
     m_views.push_back(std::move(view));
     render();
+    if(check) {
+        checkForChanges();
+    }
 }
 
 void TidalBrowser::render()
 {
-    const View& view = current();
+    const View& view          = current();
+    const bool playlistsList  = !view.isSearch && view.list == TidalCatalog::List::Playlists;
+    const int scrollPosition  = m_tree->verticalScrollBar()->value();
+    const bool sameViewRedraw = m_tree->topLevelItemCount() > 0 && view.updating;
 
     m_back->setEnabled(m_views.size() > 1);
     m_title->setVisible(!view.title.isEmpty());
     m_title->setText(view.title);
+    m_tree->headerItem()->setText(Date, playlistsList ? tr("Modified") : tr("Added"));
 
+    m_tree->setSortingEnabled(false);
     m_tree->clear();
     if(view.isSearch) {
         const std::array groupNames{tr("Tracks"), tr("Albums"), tr("Artists"), tr("Playlists")};
@@ -297,36 +444,68 @@ void TidalBrowser::render()
         for(size_t group{0}; group < groupNames.size(); ++group) {
             const qsizetype size = view.groupSizes.at(group);
             if(size == 0) {
-                index += size;
                 continue;
             }
             auto* header = new QTreeWidgetItem(QStringList{u"%1 (%2)"_s.arg(groupNames.at(group)).arg(size)});
             header->setFlags(Qt::ItemIsEnabled);
-            QFont font = header->font(Title);
+            QFont font = header->font(Position);
             font.setBold(true);
-            header->setFont(Title, font);
+            header->setFont(Position, font);
             m_tree->addTopLevelItem(header);
             header->setFirstColumnSpanned(true);
             for(qsizetype i{0}; i < size; ++i, ++index) {
-                header->addChild(rowFor(view.items.at(index), index));
+                header->addChild(rowFor(view.items.at(index), index, i, false));
             }
             header->setExpanded(true);
         }
+        // Search results stay in TIDAL's order (best match first), grouped by kind.
+        m_tree->header()->setSortIndicatorShown(false);
     }
     else {
         m_tree->setRootIsDecorated(false);
         QList<QTreeWidgetItem*> rows;
         rows.reserve(view.items.size());
         for(qsizetype i{0}; i < view.items.size(); ++i) {
-            rows.push_back(rowFor(view.items.at(i), i));
+            rows.push_back(rowFor(view.items.at(i), i, i, playlistsList));
         }
         m_tree->addTopLevelItems(rows);
+        applySort();
+    }
+
+    // Dates only where TIDAL gives them (favorites, playlists), not in albums or search.
+    const bool hasDates = std::ranges::any_of(view.items, [playlistsList](const TidalItem& item) {
+        return dateFor(item, playlistsList).isValid();
+    });
+    m_tree->setColumnHidden(Date, !hasDates);
+
+    if(sameViewRedraw) {
+        m_tree->verticalScrollBar()->setValue(scrollPosition);
     }
 
     updateStatus();
     if(!view.loaded && !view.failed && !m_loading) {
         loadMore();
     }
+}
+
+void TidalBrowser::applySort()
+{
+    m_applyingSort = true;
+    m_tree->header()->setSortIndicatorShown(true);
+    m_tree->setSortingEnabled(true);
+    m_tree->sortByColumn(m_sortColumn, m_sortOrder);
+    m_applyingSort = false;
+}
+
+void TidalBrowser::saveSort(int column, Qt::SortOrder order)
+{
+    if(m_applyingSort || !m_tree->isSortingEnabled()) {
+        return;
+    }
+    m_sortColumn = column;
+    m_sortOrder  = order;
+    m_services.settings->fileSet(SortColumnSetting, column);
+    m_services.settings->fileSet(SortOrderSetting, static_cast<int>(order));
 }
 
 void TidalBrowser::loadMore()
@@ -368,7 +547,8 @@ void TidalBrowser::loadMore()
         return;
     }
 
-    using Result  = std::expected<TidalPage, QString>;
+    // Page by page, each shown as it comes; the whole list goes in the cache at the end.
+    using Result  = std::expected<FirstPage, QString>;
     auto* watcher = new QFutureWatcher<Result>(this);
     QObject::connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, generation]() {
         const Result result = watcher->result();
@@ -382,28 +562,116 @@ void TidalBrowser::loadMore()
             return;
         }
 
-        View& view            = current();
-        const qsizetype first = view.items.size();
-        view.items.append(result->items);
-        view.nextCursor = result->nextCursor;
+        View& view = current();
+        if(view.pages.isEmpty()) {
+            view.version = result->version;
+        }
+        view.pages.push_back(result->page);
+        const TidalPage page    = TidalCatalog::parsePage(result->page);
+        const qsizetype first   = view.items.size();
+        const bool playlistList = view.list == TidalCatalog::List::Playlists;
+        view.items.append(page.items);
+        view.nextCursor = page.nextCursor;
         view.loaded     = view.nextCursor.isEmpty();
 
         QList<QTreeWidgetItem*> rows;
         for(qsizetype i{first}; i < view.items.size(); ++i) {
-            rows.push_back(rowFor(view.items.at(i), i));
+            rows.push_back(rowFor(view.items.at(i), i, i, playlistList));
         }
         m_tree->addTopLevelItems(rows);
+        if(first == 0) {
+            const bool hasDates = std::ranges::any_of(
+                view.items, [playlistList](const TidalItem& item) { return dateFor(item, playlistList).isValid(); });
+            m_tree->setColumnHidden(Date, !hasDates);
+        }
 
         if(view.loaded) {
+            m_services.cache->store(view.list, view.id, view.version, std::exchange(view.pages, {}));
             updateStatus();
         }
         else {
             loadMore();
         }
     });
+    watcher->setFuture(QtConcurrent::run([account = m_services.account, list = view.list, id = view.id,
+                                          cursor = view.nextCursor, cancelled = cancelled()]() -> Result {
+        TidalCatalog catalog{account};
+        FirstPage result;
+        if(cursor.isEmpty() && TidalCatalog::hasVersion(list)) {
+            // Before the pages: a change while they're fetched shows up as a new version later.
+            auto version = catalog.version(list, id, cancelled);
+            if(!version) {
+                return std::unexpected(version.error());
+            }
+            result.version = *version;
+        }
+        auto page = catalog.pageDocument(list, id, cursor, cancelled);
+        if(!page) {
+            return std::unexpected(page.error());
+        }
+        result.page = std::move(*page);
+        return result;
+    }));
+}
+
+void TidalBrowser::checkForChanges()
+{
+    View& view = current();
+    if(!m_services.account->isLoggedIn() || view.isSearch || view.updating) {
+        return;
+    }
+    view.updating = true;
+    updateStatus();
+
+    const auto list          = view.list;
+    const QString id         = view.id;
+
+    using Result  = std::expected<Sync, QString>;
+    auto* watcher = new QFutureWatcher<Result>(this);
+    QObject::connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, list, id]() {
+        const Result result = watcher->result();
+        watcher->deleteLater();
+
+        // Kept even when the panel has moved on to another list.
+        const TidalCache::Entry* entry{nullptr};
+        if(!result) {
+            // The cached copy stays; it's checked again next time.
+            qCWarning(TIDAL) << "TIDAL panel: couldn't check for changes:" << result.error();
+        }
+        else if(result->unchanged) {
+            if(TidalCache::Entry* cached = m_services.cache->find(list, id)) {
+                cached->checked = QDateTime::currentDateTimeUtc();
+            }
+        }
+        else {
+            entry = m_services.cache->store(list, id, result->version, result->pages);
+        }
+
+        // The list may be the current view, or one Back leads to.
+        for(size_t i{0}; i < m_views.size(); ++i) {
+            View& view = m_views.at(i);
+            if(view.isSearch || view.list != list || view.id != id || !view.updating) {
+                continue;
+            }
+            if(entry) {
+                view.items   = entry->items;
+                view.version = entry->version;
+            }
+            if(i + 1 == m_views.size()) {
+                if(entry) {
+                    render();
+                }
+                view.updating = false;
+                updateStatus();
+            }
+            else {
+                view.updating = false;
+            }
+        }
+    });
     watcher->setFuture(QtConcurrent::run(
-        [account = m_services.account, list = view.list, id = view.id, cursor = view.nextCursor]() {
-            return TidalCatalog{account}.page(list, id, cursor);
+        [account = m_services.account, list, id, known = view.version, cancelled = cancelled()]() {
+            return sync(account, list, id, known, cancelled);
         }));
 }
 
@@ -431,6 +699,9 @@ void TidalBrowser::updateStatus()
     else if(view.items.isEmpty()) {
         m_status->setText(view.isSearch ? tr("Nothing found.") : tr("Nothing here."));
     }
+    else if(view.updating) {
+        m_status->setText(tr("%n item(s) · checking TIDAL for changes…", nullptr, static_cast<int>(view.items.size())));
+    }
     else {
         m_status->setText(tr("%n item(s)", nullptr, static_cast<int>(view.items.size())));
     }
@@ -441,7 +712,7 @@ const TidalItem* TidalBrowser::itemAt(QTreeWidgetItem* treeItem) const
     if(!treeItem || m_views.empty()) {
         return nullptr;
     }
-    const QVariant index = treeItem->data(Title, ItemIndexRole);
+    const QVariant index = treeItem->data(Position, ItemIndexRole);
     const auto& items    = m_views.back().items;
     if(!index.isValid() || index.toLongLong() < 0 || index.toLongLong() >= items.size()) {
         return nullptr;
@@ -460,7 +731,7 @@ void TidalBrowser::activate(QTreeWidgetItem* treeItem)
         return;
     }
 
-    // Play the list the track is in (its search group, or the whole view), from this track.
+    // Play the list the track is in (its search group, or the whole view) as sorted, from this track.
     QTreeWidgetItem* parent = treeItem->parent();
     const int count         = parent ? parent->childCount() : m_tree->topLevelItemCount();
     Fooyin::TrackList tracks;
@@ -525,43 +796,66 @@ void TidalBrowser::sendAll(const TidalItem& item, SendAction action)
     const auto list
         = item.kind == TidalItem::Kind::Album ? TidalCatalog::List::AlbumTracks : TidalCatalog::List::PlaylistTracks;
 
+    // A cached copy that's known to be current is used as it is; otherwise TIDAL is asked.
+    std::optional<QString> known;
+    if(const TidalCache::Entry* entry = m_services.cache->find(list, item.id)) {
+        if(!TidalCache::needsCheck(list, *entry)) {
+            send(entry->items, item.title, action);
+            return;
+        }
+        known = entry->version;
+    }
+
     m_status->setText(tr("Loading %1…").arg(item.title.toHtmlEscaped()));
 
-    using Result  = std::expected<QList<TidalItem>, QString>;
+    using Result  = std::expected<Sync, QString>;
     auto* watcher = new QFutureWatcher<Result>(this);
-    QObject::connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, action, title = item.title]() {
-        const Result result = watcher->result();
-        watcher->deleteLater();
-        updateStatus();
-        if(!result) {
-            qCWarning(TIDAL) << "TIDAL panel:" << result.error();
-            m_status->setText(tr("Couldn't load %1: %2").arg(title.toHtmlEscaped(), result.error().toHtmlEscaped()));
-            return;
-        }
+    QObject::connect(watcher, &QFutureWatcher<Result>::finished, this,
+                     [this, watcher, action, list, id = item.id, title = item.title]() {
+                         const Result result = watcher->result();
+                         watcher->deleteLater();
+                         updateStatus();
+                         if(!result) {
+                             qCWarning(TIDAL) << "TIDAL panel:" << result.error();
+                             m_status->setText(tr("Couldn't load %1: %2")
+                                                   .arg(title.toHtmlEscaped(), result.error().toHtmlEscaped()));
+                             return;
+                         }
+                         TidalCache::Entry* entry = m_services.cache->find(list, id);
+                         if(result->unchanged && entry) {
+                             entry->checked = QDateTime::currentDateTimeUtc();
+                         }
+                         else {
+                             entry = m_services.cache->store(list, id, result->version, result->pages);
+                         }
+                         send(entry->items, title, action);
+                     });
+    watcher->setFuture(QtConcurrent::run([account = m_services.account, list, id = item.id, known,
+                                          cancelled = cancelled()]() { return sync(account, list, id, known, cancelled); }));
+}
 
-        Fooyin::TrackList tracks;
-        for(const TidalItem& entry : *result) {
-            if(entry.kind == TidalItem::Kind::Track) {
-                tracks.push_back(entry.track);
-            }
+void TidalBrowser::send(const QList<TidalItem>& items, const QString& title, SendAction action)
+{
+    Fooyin::TrackList tracks;
+    for(const TidalItem& entry : items) {
+        if(entry.kind == TidalItem::Kind::Track) {
+            tracks.push_back(entry.track);
         }
-        if(tracks.empty()) {
-            return;
-        }
-        switch(action) {
-            case SendAction::Play:
-                m_services.trackSelection->startPlayback(tracks, 0);
-                break;
-            case SendAction::AddToCurrent:
-                m_services.playlistInteractor->tracksToCurrentPlaylist(tracks);
-                break;
-            case SendAction::NewPlaylist:
-                m_services.playlistInteractor->tracksToNewPlaylist(title, tracks);
-                break;
-        }
-    });
-    watcher->setFuture(QtConcurrent::run(
-        [account = m_services.account, list, id = item.id]() { return TidalCatalog{account}.all(list, id); }));
+    }
+    if(tracks.empty()) {
+        return;
+    }
+    switch(action) {
+        case SendAction::Play:
+            m_services.trackSelection->startPlayback(tracks, 0);
+            break;
+        case SendAction::AddToCurrent:
+            m_services.playlistInteractor->tracksToCurrentPlaylist(tracks);
+            break;
+        case SendAction::NewPlaylist:
+            m_services.playlistInteractor->tracksToNewPlaylist(title, tracks);
+            break;
+    }
 }
 } // namespace FooyinTidal
 

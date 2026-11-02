@@ -93,18 +93,27 @@ Restart fooyin and open **Settings > Integrations > TIDAL**, which has two login
 The logins are kept in `~/.var/app/org.fooyin.fooyin/config/fooyin/tidal/` (`account.json` and
 `session.json`), readable only by you.
 
-Then open **View > TIDAL**, or add the panel to your layout (layout editing: **Internet > TIDAL**).
+Then open **View > TIDAL**, or put the panel in your layout. To have it as a tab next to your
+playlist: **Layout > Editing mode**, right-click the playlist, **Split > Tab Stack**, then
+right-click the new tab bar, **Insert inside > Internet > TIDAL**, and turn editing mode off.
 Pick favorites or playlists from the list at the top, or type a search and press Enter.
-Double-click a track to play it and the rest of its list after it; double-click an album, playlist or
-artist to open it, and **Back** to return. Right-click tracks for fooyin's usual track menu, or an
-album or playlist to play it, add it to the current playlist, or send it to a new one.
+Double-click a track to play it and the rest of its list after it, in the order shown; double-click
+an album, playlist or artist to open it, and **Back** to return. Click a column heading to sort
+(**Added** sorts by when tracks went into the playlist or favorites); the sort is kept for every
+list. Right-click tracks for fooyin's usual track menu, or an album or playlist to play it, add it to
+the current playlist, or send it to a new one.
+
+Lists the panel has fetched are kept in `~/.var/app/org.fooyin.fooyin/cache/fooyin/tidal/`, so they
+open straight away next time; TIDAL is then asked (one quick request) whether the list changed, and
+it's fetched again only if it did. The reload button fetches the list again regardless.
 
 **File > Add TIDAL track…** still adds a single track with a link such as
 `https://tidal.com/browse/track/58990486` or just the number. The track goes to the current
 playlist and plays like any other.
 
 `scripts/catalog-check.sh search <words>` (or `favorite-tracks`, `playlists`, `album <id>`, …) runs
-the panel's calls to the official API inside fooyin's sandbox and prints what the panel would list.
+the panel's calls to the official API inside fooyin's sandbox and prints what the panel would list;
+`--version` prints what the cache compares, `--cache <dir>` stores a list in a cache and reads it back.
 
 `scripts/stream-check.sh <track ID> [start ms]` runs the plugin's streaming code inside fooyin's
 sandbox without starting fooyin, and checks the result with ffprobe. With a start position it

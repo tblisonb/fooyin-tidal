@@ -13,6 +13,7 @@
 
 #include <core/track.h>
 
+#include <QDateTime>
 #include <QJsonObject>
 
 #include <expected>
@@ -41,6 +42,12 @@ struct TidalItem
     QString album;
     //! A track's length, an album's year and type, a playlist's track count.
     QString info;
+    //! What `info` sorts by: a track's length in ms, an album's year, a playlist's track count.
+    qint64 infoOrder{0};
+    //! When it was added to the favorites or playlist it was listed from, if TIDAL says.
+    QDateTime added;
+    //! A playlist's last change.
+    QDateTime modified;
     //! For a track: the fooyin track that plays it.
     Fooyin::Track track;
 };
@@ -67,6 +74,8 @@ struct TidalSearch
 class TidalCatalog
 {
 public:
+    using Cancelled = BlockingHttp::Cancelled;
+
     enum class List : uint8_t
     {
         FavoriteTracks,
@@ -87,6 +96,23 @@ public:
     //! Every page of a list, one after another.
     std::expected<QList<TidalItem>, QString> all(List list, const QString& id = {},
                                                  const BlockingHttp::Cancelled& cancelled = {});
+
+    //! One page as TIDAL sent it (what the cache keeps); `parsePage` makes it a `TidalPage`.
+    std::expected<QJsonObject, QString> pageDocument(List list, const QString& id = {}, const QString& cursor = {},
+                                                     const BlockingHttp::Cancelled& cancelled = {});
+    //! Every page of a list as TIDAL sent them.
+    std::expected<QList<QJsonObject>, QString> allDocuments(List list, const QString& id = {},
+                                                            const BlockingHttp::Cancelled& cancelled = {});
+    static TidalPage parsePage(const QJsonObject& document);
+
+    //! Whether a list's contents can be checked for changes with `version()`.
+    static bool hasVersion(List list);
+    /*!
+     * A short request that tells whether a list has changed: the same string as before means the
+     * same contents. From the list's last change and item count.
+     */
+    std::expected<QString, QString> version(List list, const QString& id = {},
+                                            const BlockingHttp::Cancelled& cancelled = {});
 
 private:
     std::expected<QJsonObject, QString> get(const QString& path, QUrlQuery query,

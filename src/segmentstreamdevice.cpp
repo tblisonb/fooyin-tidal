@@ -133,7 +133,6 @@ bool SegmentStreamDevice::isAborted() const
 
 void SegmentStreamDevice::download()
 {
-    // Created on this thread, so its replies are handled by this thread's event loop.
     BlockingHttp http;
     const auto cancelled = [this]() { return isAborted(); };
 
@@ -144,8 +143,7 @@ void SegmentStreamDevice::download()
                 append(chunk);
             }
         };
-        const HttpResult result
-            = BlockingHttp::run(http.network().get(BlockingHttp::request(QUrl{m_urls.at(i)})), cancelled, onData);
+        const HttpResult result = http.getStreamed(QUrl{m_urls.at(i)}, onData, cancelled);
         if(!result.ok()) {
             error = u"Segment %1 of %2: %3"_s.arg(i + 1).arg(m_urls.size()).arg(result.describe());
             break;

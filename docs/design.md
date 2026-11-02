@@ -37,6 +37,7 @@ playlist entry tidal://track/<id>
 | `src/tidalplugin.*` | The plugin: core (logins), input (decoder registration), GUI (settings page, File > Add TIDAL track…). |
 | `src/tidalbrowser.*` | The TIDAL panel (View > TIDAL, or a layout widget): search, favorites, playlists. |
 | `src/tidalcatalog.*` | Official API calls for the panel, as `TidalItem`s (tracks become fooyin tracks); blocking. |
+| `src/tidalcache.*` | The panel's lists as TIDAL's raw pages, in memory and on disk, with each list's version. |
 | `src/tidalsettingspage.*` | Settings > Integrations > TIDAL: the account and playback logins. |
 | `src/callbackserver.*` | Waits on `localhost:47130` for the browser to come back from the account login. |
 | `src/tidallogin.*` | Both logins' PKCE requests, code exchange, and the country lookup; blocking. |
@@ -44,7 +45,7 @@ playlist entry tidal://track/<id>
 | `src/segmentstreamdevice.*` | Sequential `QIODevice` over URLs fetched one after another. |
 | `src/tidalapi.*` | v1 calls (track details, playbackinfo), DASH/BTS manifest parsing, `tidal://` paths. |
 | `src/tidalsession.*` | One login in a JSON file (`account.json`, `session.json`); refreshes its token, thread-safe. |
-| `src/blockinghttp.*` | Synchronous HTTP for threads without an event loop (fooyin's decoder threads). |
+| `src/blockinghttp.*` | Synchronous HTTP: requests run on a network thread of its own while the caller waits. |
 | `tools/tidal-probe.py` | Python probe of both APIs, with its own copy of the logins (`~/.config/fooyin-tidal`). |
 | `tools/plugin-check.cpp` | Loads the plugin in fooyin's sandbox against the Flatpak's libraries. |
 | `tools/catalog-check.cpp` | Runs the panel's API calls in fooyin's sandbox and prints the results. |
@@ -68,6 +69,13 @@ being opened, so the device to abort is held in an `std::atomic<std::shared_ptr>
   playback sequence: what the panel's double-click uses. Setting a widget's selection with
   `changeSelectedTracks(context, …)` and calling `addTrackContextMenu(menu, context)` gives fooyin's
   whole track menu (queue, add to playlist, …) for free.
+- **Never run a local event loop on fooyin's audio engine thread** (where decoders are opened). The
+  engine's commands are queued calls to that thread, so a `QEventLoop` there (waiting for a network
+  reply) delivers them in the middle of `loadTrack`. The first track double-clicked from the panel
+  loaded but didn't play: `play()` arrived while the track was still `Loading`, and `AudioEngine::play`
+  ignores it then. Later tracks played only because the engine was already playing, so loading
+  started them itself. `BlockingHttp` therefore does its requests on its own thread, and the caller
+  only waits on a condition variable.
 - Plugins are Qt plugins with IID `org.fooyin.fooyin.plugin/2`, implementing any of `Plugin`,
   `CorePlugin`, `GuiPlugin`, `InputPlugin`. The C++ interface isn't stable: rebuild for every fooyin
   version (`scripts/build.sh` notices a new version and rebuilds against it).
@@ -113,6 +121,14 @@ being opened, so the device to abort is held in an `std::atomic<std::shared_ptr>
   returned 400.
 - Lists page by 20, with `links.meta.nextCursor` for `page[cursor]`; a page takes about 0.5 s, so
   1179 favorite tracks take about 30 s in all. The panel shows each page as it arrives.
+- Dates: the linkage `meta` of favorites and of playlist items has `addedAt`; playlists have
+  `createdAt` and `lastModifiedAt` (a mix's changes daily).
+- Telling whether a list changed without fetching it: `GET /userCollectionTracks/me` (and `…Albums`,
+  `…Artists`, `…Playlists`) has `numberOfItems` and `lastModifiedAt`; `GET /playlists/{id}` has the
+  same. Whether `userCollectionPlaylists`' date moves when a playlist in it is edited isn't known, so
+  the playlists list's version also covers its first page (sorted by `-lastModifiedAt`, so an edited
+  playlist comes first). Albums don't change; an artist's albums have no such date, so the cache
+  fetches them again after a day.
 - Durations are ISO 8601 (`PT3M59S`). Album cover art is `coverArt` → `artworks` with `files` of
   several sizes (up to 1280×1280).
 - `GET /users/me` gives the country (and the account's name and email: don't log it).
@@ -150,7 +166,8 @@ Track IDs to test with: `58990486` (Radiohead, "Creep", CD quality) and `2901368
   instead of the Flatpak's; `build.sh` passes `-DCMAKE_SKIP_BUILD_RPATH=ON`.
 - fooyin builds as C++23; the plugin matches it.
 - fooyin is single-instance: launching it again hands off to the running copy. Quit it fully before
-  starting it from a terminal to see `fooyin.tidal` log lines.
+  starting it from a terminal to see `fooyin.tidal` log lines. Started from the desktop, its log goes
+  to the journal: `journalctl --user --since -1h | grep -E 'fooyin.tidal|fy.engine'`.
 
 ## Next: phase 1
 
@@ -167,8 +184,10 @@ Roughly in this order:
    View > TIDAL also opens in a window. Search (tracks, albums, artists, playlists), favorite
    tracks/albums/artists, your playlists; albums, playlists and artists open in place with Back;
    double-click plays the list from that track. Tracks are built from v2 data (artists, album
-   artist, album, date, track/disc numbers in albums, ISRC). Views aren't cached between windows,
-   so favorites load again each time.
+   artist, album, date, track/disc numbers in albums, ISRC). Sortable columns, including the date
+   tracks were added (the sort is shared by every list and kept in fooyin's settings). Lists are
+   cached (`TidalCache`, ~1.8 MB for 1179 tracks) and shown at once, then checked with one request
+   (at most once a minute per list) and fetched again in the background only if they changed.
 3. **Track details from v2** instead of v1 (artists, album artists, release date, ISRC, ReplayGain
    from `trackManifests`' normalization data if usable), and **cover art** (v2 album `coverArt`).
 4. **Playlists:** open a TIDAL playlist as a fooyin playlist; create, rename, delete; add, remove and
