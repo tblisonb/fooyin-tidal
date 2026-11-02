@@ -16,6 +16,7 @@
 #include <gui/guiconstants.h>
 #include <gui/playlist/playlistinteractor.h>
 #include <gui/trackselectioncontroller.h>
+#include <gui/widgets/autoheaderview.h>
 #include <utils/actions/actionmanager.h>
 #include <utils/actions/widgetcontext.h>
 #include <utils/settings/settingsdialogcontroller.h>
@@ -24,11 +25,11 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QFutureWatcher>
-#include <QHeaderView>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QActionGroup>
 #include <QLoggingCategory>
 #include <QMenu>
 #include <QScrollBar>
@@ -47,6 +48,9 @@ namespace {
 constexpr int ItemIndexRole = Qt::UserRole;
 constexpr int SortRole      = Qt::UserRole + 1;
 constexpr auto SourceKey    = "Source"_L1;
+// Each panel keeps its own columns (shown, order, widths) in fooyin's layout, as playlists do.
+constexpr auto ColumnsKey      = "Columns"_L1;
+constexpr auto ColumnCountKey  = "ColumnCount"_L1;
 // The sort is the same in every list and every panel, and kept across restarts.
 constexpr auto SortColumnSetting = "Tidal/BrowserSortColumn";
 constexpr auto SortOrderSetting  = "Tidal/BrowserSortOrder";
@@ -59,6 +63,10 @@ enum Column : uint8_t
     Album,
     Date,
     Details,
+    // Hidden at first; new columns go here, after the ones sort settings may already name.
+    AlbumArtist,
+    TrackNumber,
+    Released,
     ColumnCount,
 };
 
@@ -113,8 +121,16 @@ QTreeWidgetItem* rowFor(const FooyinTidal::TidalItem& item, qsizetype index, qsi
     const QString dateText
         = date.isValid() ? QLocale{}.toString(date.toLocalTime().date(), QLocale::ShortFormat) : QString{};
 
+    const bool isTrack = item.kind == FooyinTidal::TidalItem::Kind::Track;
+    QString trackNumber;
+    if(isTrack && !item.track.trackNumber().isEmpty()) {
+        trackNumber = item.track.discNumber().toInt() > 1 ? u"%1.%2"_s.arg(item.track.discNumber(), item.track.trackNumber())
+                                                          : item.track.trackNumber();
+    }
+
     auto* row = new Row(QStringList{QString::number(position + 1), item.title, item.artist, item.album, dateText,
-                                    item.info});
+                                    item.info, isTrack ? item.track.albumArtists().join(u", "_s) : QString{},
+                                    trackNumber, isTrack ? item.track.date() : QString{}});
     row->setData(Position, ItemIndexRole, static_cast<qlonglong>(index));
     row->setData(Position, SortRole, static_cast<qlonglong>(position));
     if(date.isValid()) {
@@ -124,8 +140,13 @@ QTreeWidgetItem* rowFor(const FooyinTidal::TidalItem& item, qsizetype index, qsi
     if(!item.info.isEmpty()) {
         row->setData(Details, SortRole, item.infoOrder);
     }
+    if(!trackNumber.isEmpty()) {
+        row->setData(TrackNumber, SortRole,
+                     (item.track.discNumber().toLongLong() * 10000) + item.track.trackNumber().toLongLong());
+    }
     row->setTextAlignment(Position, Qt::AlignRight | Qt::AlignVCenter);
     row->setTextAlignment(Details, Qt::AlignRight | Qt::AlignVCenter);
+    row->setTextAlignment(TrackNumber, Qt::AlignRight | Qt::AlignVCenter);
     if(item.kind != FooyinTidal::TidalItem::Kind::Track) {
         row->setToolTip(Title, QCoreApplication::translate("FooyinTidal::TidalBrowser", "Double-click to open"));
     }
@@ -194,6 +215,7 @@ TidalBrowser::TidalBrowser(Services services, QWidget* parent)
     , m_refresh{new QToolButton(this)}
     , m_title{new QLabel(this)}
     , m_tree{new QTreeWidget(this)}
+    , m_header{new Fooyin::AutoHeaderView(Qt::Horizontal, m_tree)}
     , m_status{new QLabel(this)}
     , m_sortColumn{std::clamp(m_services.settings->fileValue(SortColumnSetting, int{Position}).toInt(), 0,
                               ColumnCount - 1)}
@@ -225,21 +247,24 @@ TidalBrowser::TidalBrowser(Services services, QWidget* parent)
     m_title->setFont(titleFont);
     m_title->hide();
 
-    m_tree->setHeaderLabels({u"#"_s, tr("Title"), tr("Artist"), tr("Album"), tr("Added"), tr("Details")});
+    // fooyin's own header, as in its playlists: columns can be resized, moved, hidden and auto-sized.
+    m_tree->setHeader(m_header);
+    m_tree->setHeaderLabels({u"#"_s, tr("Title"), tr("Artist"), tr("Album"), tr("Added"), tr("Details"),
+                             tr("Album Artist"), tr("Track No."), tr("Release Date")});
     m_tree->headerItem()->setTextAlignment(Position, Qt::AlignRight | Qt::AlignVCenter);
+    m_tree->headerItem()->setTextAlignment(TrackNumber, Qt::AlignRight | Qt::AlignVCenter);
     m_tree->setRootIsDecorated(false);
     m_tree->setUniformRowHeights(true);
     m_tree->setAlternatingRowColors(true);
     m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_tree->header()->setStretchLastSection(false);
-    m_tree->header()->setSectionsClickable(true);
-    m_tree->header()->setSectionResizeMode(Position, QHeaderView::ResizeToContents);
-    m_tree->header()->setSectionResizeMode(Title, QHeaderView::Stretch);
-    m_tree->header()->setSectionResizeMode(Date, QHeaderView::ResizeToContents);
-    m_tree->header()->setSectionResizeMode(Details, QHeaderView::ResizeToContents);
-    m_tree->setColumnWidth(Artist, 200);
-    m_tree->setColumnWidth(Album, 200);
+    m_header->setStretchLastSection(false);
+    m_header->setStretchEnabled(true);
+    m_header->setSectionsMovable(true);
+    m_header->setFirstSectionMovable(false);
+    m_header->setSectionsClickable(true);
+    m_header->setContextMenuPolicy(Qt::CustomContextMenu);
+    resetColumns();
 
     m_status->setWordWrap(true);
     m_status->setTextFormat(Qt::RichText);
@@ -264,7 +289,8 @@ TidalBrowser::TidalBrowser(Services services, QWidget* parent)
     QObject::connect(m_tree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item) { activate(item); });
     QObject::connect(m_tree, &QTreeWidget::customContextMenuRequested, this, &TidalBrowser::showContextMenu);
     QObject::connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &TidalBrowser::updateSelection);
-    QObject::connect(m_tree->header(), &QHeaderView::sortIndicatorChanged, this, &TidalBrowser::saveSort);
+    QObject::connect(m_header, &QHeaderView::sortIndicatorChanged, this, &TidalBrowser::saveSort);
+    QObject::connect(m_header, &QWidget::customContextMenuRequested, this, &TidalBrowser::showHeaderMenu);
     QObject::connect(m_status, &QLabel::linkActivated, this, [this]() {
         m_services.settings->settingsDialog()->openAtPage(SettingsPageId);
     });
@@ -287,7 +313,9 @@ QString TidalBrowser::layoutName() const
 
 void TidalBrowser::saveLayoutData(QJsonObject& layout)
 {
-    layout[SourceKey] = m_source->currentIndex();
+    layout[SourceKey]      = m_source->currentIndex();
+    layout[ColumnsKey]     = QString::fromLatin1(qCompress(m_header->saveHeaderState(false), 9).toBase64());
+    layout[ColumnCountKey] = int{ColumnCount};
 }
 
 void TidalBrowser::loadLayoutData(const QJsonObject& layout)
@@ -296,6 +324,59 @@ void TidalBrowser::loadLayoutData(const QJsonObject& layout)
     if(source >= 0 && source < m_source->count()) {
         m_source->setCurrentIndex(source);
     }
+
+    // Columns saved by a version with other columns are left at the defaults.
+    const QByteArray columns = qUncompress(QByteArray::fromBase64(layout.value(ColumnsKey).toString().toLatin1()));
+    if(!columns.isEmpty() && layout.value(ColumnCountKey).toInt() == ColumnCount) {
+        m_header->restoreHeaderState(columns, false);
+    }
+}
+
+void TidalBrowser::resetColumns()
+{
+    m_header->resetSectionPositions();
+    m_header->setHeaderSectionWidths({{Position, 0.05},
+                                      {Title, 0.33},
+                                      {Artist, 0.2},
+                                      {Album, 0.2},
+                                      {Date, 0.11},
+                                      {Details, 0.11},
+                                      {AlbumArtist, 0.15},
+                                      {TrackNumber, 0.06},
+                                      {Released, 0.11}});
+    for(int column{0}; column < ColumnCount; ++column) {
+        m_header->setHeaderSectionHidden(column, column == AlbumArtist || column == TrackNumber || column == Released);
+    }
+}
+
+void TidalBrowser::showHeaderMenu(const QPoint& pos)
+{
+    auto* menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto* columns = menu->addMenu(tr("Columns"));
+    const int shown = m_header->count() - m_header->hiddenSectionCount();
+    for(int section{0}; section < m_header->count(); ++section) {
+        const int column = m_header->logicalIndex(section);
+        auto* action     = columns->addAction(m_tree->headerItem()->text(column));
+        action->setCheckable(true);
+        action->setChecked(!m_header->isSectionHidden(column));
+        // # stays: search results' group rows (and their arrows) are drawn in it. So do one other.
+        action->setEnabled(column != Position && (!action->isChecked() || shown > 2));
+        QObject::connect(action, &QAction::toggled, this,
+                         [this, column](bool checked) { m_header->setHeaderSectionHidden(column, !checked); });
+    }
+
+    menu->addSeparator();
+    auto* autoSize = menu->addAction(tr("Auto-size columns"));
+    autoSize->setStatusTip(tr("Size columns to fill the panel's width"));
+    autoSize->setCheckable(true);
+    autoSize->setChecked(m_header->isStretchEnabled());
+    QObject::connect(autoSize, &QAction::toggled, this, [this](bool checked) { m_header->setStretchEnabled(checked); });
+    QObject::connect(menu->addAction(tr("Reset columns to default")), &QAction::triggered, this,
+                     &TidalBrowser::resetColumns);
+
+    menu->popup(m_header->mapToGlobal(pos));
 }
 
 void TidalBrowser::showEvent(QShowEvent* event)
@@ -459,7 +540,7 @@ void TidalBrowser::render()
             header->setExpanded(true);
         }
         // Search results stay in TIDAL's order (best match first), grouped by kind.
-        m_tree->header()->setSortIndicatorShown(false);
+        m_header->setSortIndicatorShown(false);
     }
     else {
         m_tree->setRootIsDecorated(false);
@@ -471,12 +552,6 @@ void TidalBrowser::render()
         m_tree->addTopLevelItems(rows);
         applySort();
     }
-
-    // Dates only where TIDAL gives them (favorites, playlists), not in albums or search.
-    const bool hasDates = std::ranges::any_of(view.items, [playlistsList](const TidalItem& item) {
-        return dateFor(item, playlistsList).isValid();
-    });
-    m_tree->setColumnHidden(Date, !hasDates);
 
     if(sameViewRedraw) {
         m_tree->verticalScrollBar()->setValue(scrollPosition);
@@ -491,7 +566,7 @@ void TidalBrowser::render()
 void TidalBrowser::applySort()
 {
     m_applyingSort = true;
-    m_tree->header()->setSortIndicatorShown(true);
+    m_header->setSortIndicatorShown(true);
     m_tree->setSortingEnabled(true);
     m_tree->sortByColumn(m_sortColumn, m_sortOrder);
     m_applyingSort = false;
@@ -579,11 +654,6 @@ void TidalBrowser::loadMore()
             rows.push_back(rowFor(view.items.at(i), i, i, playlistList));
         }
         m_tree->addTopLevelItems(rows);
-        if(first == 0) {
-            const bool hasDates = std::ranges::any_of(
-                view.items, [playlistList](const TidalItem& item) { return dateFor(item, playlistList).isValid(); });
-            m_tree->setColumnHidden(Date, !hasDates);
-        }
 
         if(view.loaded) {
             m_services.cache->store(view.list, view.id, view.version, std::exchange(view.pages, {}));

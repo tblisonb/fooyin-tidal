@@ -27,6 +27,7 @@ class QTreeWidgetItem;
 
 namespace Fooyin {
 class ActionManager;
+class AutoHeaderView;
 class PlaylistInteractor;
 class SettingsManager;
 class TrackSelectionController;
@@ -117,6 +118,8 @@ private:
     [[nodiscard]] const TidalItem* itemAt(QTreeWidgetItem* treeItem) const;
     void activate(QTreeWidgetItem* treeItem);
     void showContextMenu(const QPoint& pos);
+    void showHeaderMenu(const QPoint& pos);
+    void resetColumns();
     void updateSelection();
     void sendAll(const TidalItem& item, SendAction action);
     void send(const QList<TidalItem>& items, const QString& title, SendAction action);
@@ -132,6 +135,7 @@ private:
     QToolButton* m_refresh;
     QLabel* m_title;
     QTreeWidget* m_tree;
+    Fooyin::AutoHeaderView* m_header;
     QLabel* m_status;
 
     std::vector<View> m_views;

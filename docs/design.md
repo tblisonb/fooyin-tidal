@@ -200,7 +200,10 @@ Roughly in this order:
    tracks/albums/artists, your playlists; albums, playlists and artists open in place with Back;
    double-click plays the list from that track. Tracks are built from v2 data (artists, album
    artist, album, date, track/disc numbers in albums, ISRC). Sortable columns, including the date
-   tracks were added (the sort is shared by every list and kept in fooyin's settings). Lists are
+   tracks were added (the sort is shared by every list and kept in fooyin's settings). The header is
+   fooyin's `AutoHeaderView` (2026-11-01): columns can be hidden, moved, resized or auto-sized, and
+   are saved per panel in the layout (`Columns`, ignored when `ColumnCount` differs); `#` can't be
+   hidden, since search's group rows are spanned rows drawn from the first column. Lists are
    cached (`TidalCache`, ~1.8 MB for 1179 tracks) and shown at once, then checked with one request
    (at most once a minute per list) and fetched again in the background only if they changed.
 3. **Cover art.** Done (2026-11-01): `TidalReader` gives fooyin each track's album cover (see the

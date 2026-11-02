@@ -100,7 +100,9 @@ Pick favorites or playlists from the list at the top, or type a search and press
 Double-click a track to play it and the rest of its list after it, in the order shown; double-click
 an album, playlist or artist to open it, and **Back** to return. Click a column heading to sort
 (**Added** sorts by when tracks went into the playlist or favorites); the sort is kept for every
-list. Right-click tracks for fooyin's usual track menu, or an album or playlist to play it, add it to
+list. Right-click a column heading to show or hide columns (Album Artist, Track No. and Release
+Date are there too), turn auto-sizing off to set widths yourself, or reset them; drag headings to
+reorder. Each TIDAL panel keeps its own columns, saved with fooyin's layout. Right-click tracks for fooyin's usual track menu, or an album or playlist to play it, add it to
 the current playlist, or send it to a new one.
 
 Lists the panel has fetched are kept in `~/.var/app/org.fooyin.fooyin/cache/fooyin/tidal/`, so they
