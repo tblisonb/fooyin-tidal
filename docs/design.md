@@ -136,6 +136,15 @@ being opened, so the device to abort is held in an `std::atomic<std::shared_ptr>
 - `GET /users/me` gives the country (and the account's name and email: don't log it).
 - Playlists, favorites ("userCollection…"), tracks, albums and artists all have v2 endpoints,
   including playlist create/edit/delete and item add/remove/reorder.
+- Edits (tested 2026-11-02): `POST`/`DELETE /playlists/{id}/relationships/items` and
+  `/userCollectionTracks|Albums|Artists|Playlists/me/relationships/items` with
+  `{"data": [{"id", "type"}]}` (at most 50 items a request). Removing from a playlist needs each
+  entry's `meta.itemId` (the items linkage has it next to `addedAt`), so duplicates are removed one
+  by one. `POST /playlists` with `attributes.name` and `accessType` (`PUBLIC` or `UNLISTED`; no
+  private option) creates one, and it shows up in `userCollectionPlaylists` by itself. Write
+  requests send `Content-Type: application/vnd.api+json` and an `Idempotency-Key`. A playlist's
+  owners come with `include=items.owners`, as user IDs matching the session's user ID; mixes have
+  none.
 - `GET /trackManifests/{id}` returns DRM-free FLAC or AAC (DASH or HLS) with ReplayGain values,
   but for a developer app (tier `THIRD_PARTY`) every track is a 29 s `PREVIEW`, with
   `previewReason: FULL_REQUIRES_HIGHER_ACCESS_TIER`.
@@ -210,8 +219,12 @@ Roughly in this order:
    pitfalls below). Not yet: covers in the panel itself.
    **Track details from v2** instead of v1 for File > Add TIDAL track (artists, album artists,
    release date, ISRC, ReplayGain from `trackManifests`' normalization data if usable).
-4. **Playlists:** open a TIDAL playlist as a fooyin playlist; create, rename, delete; add, remove and
-   reorder tracks; "Add to TIDAL playlist…" and favorite/unfavorite in the context menu.
+4. **Playlists and favorites.** Done (2026-11-02), in the panel's context menu: add tracks to one
+   of your own playlists or a new (unlisted) one, remove entries from your own playlist, and
+   favorite/unfavorite tracks, albums, artists and other people's playlists. Edits run in the
+   background. Removed rows go at once, and the lists an edit changes are marked unchecked in the
+   cache and checked with TIDAL. A list further back is checked on Back. Not yet: rename, delete,
+   reorder; opening a TIDAL playlist as a fooyin playlist.
 5. **Polish:** a quality setting, errors shown in fooyin rather than only the log, a clear message
    when v1 playback stops working.
 

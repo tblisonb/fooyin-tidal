@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QThread>
+#include <QUuid>
 
 #include <map>
 
@@ -29,6 +30,12 @@ constexpr auto ApiUrl = "https://openapi.tidal.com/v2";
 // When TIDAL says to slow down (429): wait, then try again a few times.
 constexpr int RateLimitRetries = 3;
 constexpr int RateLimitWaitMs  = 2000;
+constexpr qsizetype MaxItemsPerChange = 50;
+
+QString encoded(const QString& id)
+{
+    return QString::fromUtf8(QUrl::toPercentEncoding(id));
+}
 
 using FooyinTidal::TidalItem;
 
@@ -171,6 +178,7 @@ TidalItem trackItem(const QJsonObject& resource, const Included& included)
     item.infoOrder = static_cast<qint64>(duration);
     item.added     = addedAt(resource);
     item.track     = track;
+    item.playlistItemId = resource.value("linkMeta"_L1).toObject().value("itemId"_L1).toString();
     return item;
 }
 
@@ -217,6 +225,11 @@ TidalItem playlistItem(const QJsonObject& resource)
     item.title    = attrs.value("name"_L1).toString();
     item.added    = addedAt(resource);
     item.modified = dateTime(attrs.value("lastModifiedAt"_L1));
+
+    for(const auto& owner :
+        resource.value("relationships"_L1).toObject().value("owners"_L1).toObject().value("data"_L1).toArray()) {
+        item.owners.append(owner.toObject().value("id"_L1).toString());
+    }
 
     const QString type = attrs.value("playlistType"_L1).toString();
     item.artist        = type == "MIX"_L1 ? u"Mix"_s : type == "EDITORIAL"_L1 ? u"TIDAL"_s : QString{};
@@ -283,6 +296,13 @@ TidalCatalog::TidalCatalog(std::shared_ptr<TidalSession> account)
 std::expected<QJsonObject, QString> TidalCatalog::get(const QString& path, QUrlQuery query,
                                                       const BlockingHttp::Cancelled& cancelled)
 {
+    return request("GET", path, std::move(query), {}, cancelled);
+}
+
+std::expected<QJsonObject, QString> TidalCatalog::request(const QByteArray& method, const QString& path,
+                                                          QUrlQuery query, const QJsonObject& body,
+                                                          const BlockingHttp::Cancelled& cancelled)
+{
     const auto token = m_account->accessToken(m_http);
     if(!token) {
         return std::unexpected(token.error());
@@ -291,11 +311,19 @@ std::expected<QJsonObject, QString> TidalCatalog::get(const QString& path, QUrlQ
 
     QUrl url{QString::fromLatin1(ApiUrl) + path};
     url.setQuery(query);
-    const BlockingHttp::Headers headers{{"Authorization", "Bearer " + token->toUtf8()},
-                                        {"Accept", "application/vnd.api+json"}};
+    BlockingHttp::Headers headers{{"Authorization", "Bearer " + token->toUtf8()},
+                                  {"Accept", "application/vnd.api+json"}};
+    QByteArray payload;
+    if(method != "GET") {
+        payload = QJsonDocument{body}.toJson(QJsonDocument::Compact);
+        headers.append(std::pair<QByteArray, QByteArray>{"Content-Type", "application/vnd.api+json"});
+        // The same key on every retry, so a change TIDAL already made isn't made twice.
+        headers.append(std::pair<QByteArray, QByteArray>{"Idempotency-Key", QUuid::createUuid().toByteArray(QUuid::WithoutBraces)});
+    }
 
     for(int attempt{0};; ++attempt) {
-        const HttpResult result = m_http.get(url, headers, cancelled);
+        const HttpResult result = method == "GET" ? m_http.get(url, headers, cancelled)
+                                                  : m_http.send(method, url, headers, payload, cancelled);
         if(result.status == 429 && attempt < RateLimitRetries && !(cancelled && cancelled())) {
             QThread::msleep(RateLimitWaitMs * (attempt + 1));
             continue;
@@ -305,6 +333,92 @@ std::expected<QJsonObject, QString> TidalCatalog::get(const QString& path, QUrlQ
         }
         return QJsonDocument::fromJson(result.body).object();
     }
+}
+
+std::expected<void, QString> TidalCatalog::changeItems(const QByteArray& method, const QString& path,
+                                                       const QJsonArray& data)
+{
+    // TIDAL takes at most 50 items a request.
+    for(qsizetype first{0}; first < data.size(); first += MaxItemsPerChange) {
+        QJsonArray chunk;
+        for(qsizetype i{first}; i < std::min(data.size(), first + MaxItemsPerChange); ++i) {
+            chunk.append(data.at(i));
+        }
+        if(const auto result = request(method, path, {}, QJsonObject{{u"data"_s, chunk}}); !result) {
+            return std::unexpected(result.error());
+        }
+    }
+    return {};
+}
+
+std::expected<void, QString> TidalCatalog::addToPlaylist(const QString& playlistId, const QStringList& trackIds)
+{
+    QJsonArray data;
+    for(const QString& id : trackIds) {
+        data.append(QJsonObject{{u"id"_s, id}, {u"type"_s, u"tracks"_s}});
+    }
+    return changeItems("POST", u"/playlists/%1/relationships/items"_s.arg(encoded(playlistId)), data);
+}
+
+std::expected<void, QString> TidalCatalog::removeFromPlaylist(const QString& playlistId,
+                                                              const QList<TidalItem>& entries)
+{
+    QJsonArray data;
+    for(const TidalItem& entry : entries) {
+        if(entry.playlistItemId.isEmpty()) {
+            return std::unexpected(u"TIDAL didn't give this playlist's entries IDs; reload it and try again"_s);
+        }
+        data.append(QJsonObject{{u"id"_s, entry.id},
+                                {u"type"_s, u"tracks"_s},
+                                {u"meta"_s, QJsonObject{{u"itemId"_s, entry.playlistItemId}}}});
+    }
+    return changeItems("DELETE", u"/playlists/%1/relationships/items"_s.arg(encoded(playlistId)), data);
+}
+
+std::expected<void, QString> TidalCatalog::setFavorite(TidalItem::Kind kind, const QStringList& ids, bool favorite)
+{
+    QString collection;
+    QString type;
+    switch(kind) {
+        case TidalItem::Kind::Track:
+            collection = u"userCollectionTracks"_s;
+            type       = u"tracks"_s;
+            break;
+        case TidalItem::Kind::Album:
+            collection = u"userCollectionAlbums"_s;
+            type       = u"albums"_s;
+            break;
+        case TidalItem::Kind::Artist:
+            collection = u"userCollectionArtists"_s;
+            type       = u"artists"_s;
+            break;
+        case TidalItem::Kind::Playlist:
+            collection = u"userCollectionPlaylists"_s;
+            type       = u"playlists"_s;
+            break;
+    }
+    QJsonArray data;
+    for(const QString& id : ids) {
+        data.append(QJsonObject{{u"id"_s, id}, {u"type"_s, type}});
+    }
+    return changeItems(favorite ? "POST" : "DELETE", u"/%1/me/relationships/items"_s.arg(collection), data);
+}
+
+std::expected<QString, QString> TidalCatalog::createPlaylist(const QString& name)
+{
+    const QJsonObject body{
+        {u"data"_s,
+         QJsonObject{{u"type"_s, u"playlists"_s},
+                     {u"attributes"_s, QJsonObject{{u"name"_s, name}, {u"accessType"_s, u"UNLISTED"_s}}}}}};
+    const auto document = request("POST", u"/playlists"_s, {}, body);
+    if(!document) {
+        return std::unexpected(document.error());
+    }
+    const QString id = document->value("data"_L1).toObject().value("id"_L1).toString();
+    if(id.isEmpty()) {
+        return std::unexpected(u"TIDAL didn't return the new playlist"_s);
+    }
+    return id;
 }
 
 std::expected<TidalSearch, QString> TidalCatalog::search(const QString& query)
@@ -381,7 +495,8 @@ std::expected<QJsonObject, QString> TidalCatalog::pageDocument(List list, const 
             break;
         case List::Playlists:
             path    = u"/userCollectionPlaylists/me/relationships/items"_s;
-            include = u"items"_s;
+            // With owners: only your own playlists can be added to.
+            include = u"items,items.owners"_s;
             sort    = u"-lastModifiedAt"_s;
             break;
         case List::AlbumTracks:

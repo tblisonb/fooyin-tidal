@@ -105,6 +105,16 @@ Date are there too), turn auto-sizing off to set widths yourself, or reset them;
 reorder. Each TIDAL panel keeps its own columns, saved with fooyin's layout. Right-click tracks for fooyin's usual track menu, or an album or playlist to play it, add it to
 the current playlist, or send it to a new one.
 
+The right-click menu also edits your TIDAL account:
+- **Tracks:** add the selected tracks to one of your own TIDAL playlists, or to a new one. Inside
+  one of your playlists, **Remove from This TIDAL Playlist** removes the selected entries.
+- **Favorites:** add tracks, albums, artists and other people's playlists to your TIDAL favorites,
+  or remove them.
+
+Changes are made on TIDAL right away. The status line says how each one went, and the lists it
+changes are checked with TIDAL again. New playlists are unlisted: anyone with the link can see
+them, but they aren't shown on your profile.
+
 Lists the panel has fetched are kept in `~/.var/app/org.fooyin.fooyin/cache/fooyin/tidal/`, so they
 open straight away next time; TIDAL is then asked (one quick request) whether the list changed, and
 it's fetched again only if it did. The reload button fetches the list again regardless.
@@ -121,6 +131,9 @@ playlist and plays like any other.
 `scripts/catalog-check.sh search <words>` (or `favorite-tracks`, `playlists`, `album <id>`, …) runs
 the panel's calls to the official API inside fooyin's sandbox and prints what the panel would list;
 `--version` prints what the cache compares, `--cache <dir>` stores a list in a cache and reads it back.
+It makes the panel's edits too, on your account: `create-playlist <name>`, `playlist-add` and
+`playlist-remove <playlist> <track>...`, `favorite` and `unfavorite <track|album|artist|playlist>
+<id>...`; `raw <METHOD> <path> [json]` sends any request.
 
 `scripts/stream-check.sh <track ID> [start ms]` runs the plugin's streaming code inside fooyin's
 sandbox without starting fooyin, and checks the result with ffprobe. With a start position it

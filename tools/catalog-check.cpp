@@ -13,6 +13,8 @@
 #include "tidalsession.h"
 
 #include <QCoreApplication>
+#include <QJsonDocument>
+#include <QUrlQuery>
 #include <QLoggingCategory>
 
 #include <cstdio>
@@ -49,7 +51,7 @@ int main(int argc, char** argv)
     const QCoreApplication app{argc, argv};
     const QStringList args = app.arguments().mid(1);
     if(args.size() < 2) {
-        std::fprintf(stderr, "usage: catalog-check <account.json> search <query> | <list> [id] [--all | --version | --cache <dir>]\n");
+        std::fprintf(stderr, "usage: catalog-check <account.json> search <query> | create-playlist <name> | playlist-add|playlist-remove <playlist> <track>... | favorite|unfavorite <kind> <id>... | raw <METHOD> <path> [json] | <list> [id] [--all | --version | --cache <dir>]\n");
         return 2;
     }
 
@@ -72,6 +74,70 @@ int main(int argc, char** argv)
             std::printf("%s (%lld)\n", name, static_cast<long long>(items.size()));
             print(items);
         }
+        return 0;
+    }
+
+    // Edits, through the same calls the panel makes.
+    const auto done = [](const std::expected<void, QString>& result) {
+        if(!result) {
+            std::fprintf(stderr, "FAIL: %s\n", qPrintable(result.error()));
+            return 1;
+        }
+        std::printf("OK\n");
+        return 0;
+    };
+    if(args.at(1) == "create-playlist"_L1 && args.size() >= 3) {
+        const auto id = catalog.createPlaylist(args.mid(2).join(u' '));
+        if(!id) {
+            std::fprintf(stderr, "FAIL: %s\n", qPrintable(id.error()));
+            return 1;
+        }
+        std::printf("created %s\n", qPrintable(*id));
+        return 0;
+    }
+    if(args.at(1) == "playlist-add"_L1 && args.size() >= 4) {
+        return done(catalog.addToPlaylist(args.at(2), args.mid(3)));
+    }
+    if(args.at(1) == "playlist-remove"_L1 && args.size() >= 4) {
+        // Every entry of these tracks, as the playlist lists them.
+        const auto entries = catalog.all(TidalCatalog::List::PlaylistTracks, args.at(2));
+        if(!entries) {
+            std::fprintf(stderr, "FAIL: %s\n", qPrintable(entries.error()));
+            return 1;
+        }
+        QList<TidalItem> remove;
+        for(const TidalItem& entry : *entries) {
+            if(args.mid(3).contains(entry.id)) {
+                remove.push_back(entry);
+            }
+        }
+        std::printf("removing %lld entries\n", static_cast<long long>(remove.size()));
+        return done(catalog.removeFromPlaylist(args.at(2), remove));
+    }
+    if((args.at(1) == "favorite"_L1 || args.at(1) == "unfavorite"_L1) && args.size() >= 4) {
+        static const std::map<QString, TidalItem::Kind> kinds{{u"track"_s, TidalItem::Kind::Track},
+                                                              {u"album"_s, TidalItem::Kind::Album},
+                                                              {u"artist"_s, TidalItem::Kind::Artist},
+                                                              {u"playlist"_s, TidalItem::Kind::Playlist}};
+        const auto kind = kinds.find(args.at(2));
+        if(kind == kinds.end()) {
+            std::fprintf(stderr, "Unknown kind %s\n", qPrintable(args.at(2)));
+            return 2;
+        }
+        return done(catalog.setFavorite(kind->second, args.mid(3), args.at(1) == "favorite"_L1));
+    }
+
+    if(args.at(1) == "raw"_L1 && args.size() >= 4) {
+        // raw <METHOD> <path?query> [JSON body]: prints TIDAL's answer. Not for /users/me.
+        const QUrl url{u"https://x"_s + args.at(3)};
+        const QJsonObject body
+            = args.size() > 4 ? QJsonDocument::fromJson(args.at(4).toUtf8()).object() : QJsonObject{};
+        const auto result = catalog.request(args.at(2).toLatin1(), url.path(), QUrlQuery{url.query()}, body);
+        if(!result) {
+            std::fprintf(stderr, "FAIL: %s\n", qPrintable(result.error()));
+            return 1;
+        }
+        std::printf("%s\n", QJsonDocument{*result}.toJson(QJsonDocument::Indented).constData());
         return 0;
     }
 

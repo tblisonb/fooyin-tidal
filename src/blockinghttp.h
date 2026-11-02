@@ -56,6 +56,9 @@ public:
 
     HttpResult get(const QUrl& url, const Headers& headers = {}, const Cancelled& cancelled = {});
     HttpResult postForm(const QUrl& url, const QUrlQuery& form, const Cancelled& cancelled = {});
+    //! Any method (POST, PATCH, DELETE…) with a body, which may be empty.
+    HttpResult send(const QByteArray& method, const QUrl& url, const Headers& headers, const QByteArray& body,
+                    const Cancelled& cancelled = {});
     //! A GET whose body goes to `onData` as it arrives instead of into the result.
     HttpResult getStreamed(const QUrl& url, const DataHandler& onData, const Cancelled& cancelled = {});
 

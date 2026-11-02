@@ -48,6 +48,10 @@ struct TidalItem
     QDateTime added;
     //! A playlist's last change.
     QDateTime modified;
+    //! For a track listed from a playlist: the entry's ID there, which removing it needs.
+    QString playlistItemId;
+    //! For a playlist: its owners' user IDs, when TIDAL listed them.
+    QStringList owners;
     //! For a track: the fooyin track that plays it.
     Fooyin::Track track;
 };
@@ -114,7 +118,21 @@ public:
     std::expected<QString, QString> version(List list, const QString& id = {},
                                             const BlockingHttp::Cancelled& cancelled = {});
 
+    //! Edits; each blocks until TIDAL has made it.
+    std::expected<void, QString> addToPlaylist(const QString& playlistId, const QStringList& trackIds);
+    //! Takes the entries as the playlist listed them (they need `playlistItemId`).
+    std::expected<void, QString> removeFromPlaylist(const QString& playlistId, const QList<TidalItem>& entries);
+    std::expected<void, QString> setFavorite(TidalItem::Kind kind, const QStringList& ids, bool favorite);
+    //! A new, unlisted playlist; returns its ID.
+    std::expected<QString, QString> createPlaylist(const QString& name);
+
+    //! Any request, for the tools: the JSON:API document TIDAL answered with.
+    std::expected<QJsonObject, QString> request(const QByteArray& method, const QString& path, QUrlQuery query,
+                                                const QJsonObject& body = {},
+                                                const BlockingHttp::Cancelled& cancelled = {});
+
 private:
+    std::expected<void, QString> changeItems(const QByteArray& method, const QString& path, const QJsonArray& data);
     std::expected<QJsonObject, QString> get(const QString& path, QUrlQuery query,
                                             const BlockingHttp::Cancelled& cancelled = {});
 

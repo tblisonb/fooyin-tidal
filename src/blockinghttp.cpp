@@ -87,6 +87,15 @@ HttpResult BlockingHttp::postForm(const QUrl& url, const QUrlQuery& form, const 
     return run([req, body](QNetworkAccessManager& network) { return network.post(req, body); }, cancelled);
 }
 
+HttpResult BlockingHttp::send(const QByteArray& method, const QUrl& url, const Headers& headers,
+                              const QByteArray& body, const Cancelled& cancelled)
+{
+    const QNetworkRequest req = request(url, headers);
+    return run([req, method, body](QNetworkAccessManager& network) {
+        return network.sendCustomRequest(req, method, body);
+    }, cancelled);
+}
+
 HttpResult BlockingHttp::getStreamed(const QUrl& url, const DataHandler& onData, const Cancelled& cancelled)
 {
     const QNetworkRequest req = request(url);
