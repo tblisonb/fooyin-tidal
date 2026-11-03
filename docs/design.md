@@ -19,7 +19,9 @@ way, and what comes next. The [README](../README.md) covers building and trying 
 - **Built against the Flatpak.** fooyin is installed as the Flatpak `org.fooyin.fooyin`, so the
   plugin is built in the same SDK (`org.kde.Sdk`, currently 6.11) against fooyin's own headers for
   the installed version, and installed into the Flatpak's per-user plugin folder.
-- **The Android player is separate and later:** a Kotlin/Media3 app using TIDAL's Android Player SDK.
+- **The Android player is separate and later:** a Kotlin/Media3 app. TIDAL's Android Player SDK gives
+  third-party apps only 30-second previews (`FULL_REQUIRES_HIGHER_ACCESS_TIER`, as v2 does here), so it
+  would use the same split as this plugin: v2 for the catalog and edits, v1's DASH played by ExoPlayer.
 
 ## How playback works
 
