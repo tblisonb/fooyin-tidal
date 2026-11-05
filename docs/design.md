@@ -206,6 +206,13 @@ Roughly in this order:
    `session.json` (mode 0600) in the plugin's config folder; the probe's `export-session` is gone.
    The account's country comes from v2 `/users/me`, the playback login's from v1 `/sessions`.
    Open question: whether to keep secrets in KWallet/Secret Service via a portal instead of a file.
+   Since 1.1.0 (2026-11-05, as in Segue): **Log In to Both** chains the two (the playback login
+   opens once the account login is done, and the browser's TIDAL session from the first usually
+   skips the password and emailed code), and copying the "Oops" address finishes the playback login:
+   the page watches the clipboard (`QClipboard::dataChanged`, and again when the window is
+   activated, since Wayland only lets a focused window read it) while a playback login waits,
+   taking only an address that starts with the redirect, has a code, and wasn't on the clipboard
+   when the login started.
 2. **A TIDAL panel.** Done (2026-10-28): `TidalBrowser`, a layout widget (Internet > TIDAL) that
    View > TIDAL also opens in a window. Search (tracks, albums, artists, playlists), favorite
    tracks/albums/artists, your playlists; albums, playlists and artists open in place with Back;

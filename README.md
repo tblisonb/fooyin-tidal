@@ -61,8 +61,13 @@ The plugin uses two TIDAL logins, in **Settings > Integrations > TIDAL**:
 2. **Playback**, with the client ID and secret of one of TIDAL's own apps (developer apps only get
    29-second previews). This plugin doesn't come with one: use one of the PKCE clients other
    open-source TIDAL players use, such as python-tidal's. **Log In** opens TIDAL's login page,
-   which ends on an "Oops" page; copy that page's whole address into the box under it and press
-   **Finish Login**.
+   which ends on an "Oops" page. Copy that page's whole address and go back to fooyin: the login
+   finishes by itself. (Or paste the address into the box under it and press **Finish Login**.)
+
+With both client IDs filled in, **Log In to Both** does the two logins one after the other: the
+browser opens the account login, then, once that's done, the playback login. Your browser is still
+logged in to TIDAL from the first, so the second usually goes straight to the "Oops" page, without
+your password or an emailed code.
 
 The logins are kept in `~/.var/app/org.fooyin.fooyin/config/fooyin/tidal/` (`account.json` and
 `session.json`), readable only by you.
